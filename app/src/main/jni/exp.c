@@ -275,6 +275,59 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
     return rc;
 }
 
+/* One probe write against a scratch f2fs file. The desired plaintext is
+ * trailer-compatible (byte 14 = padlen 0, byte 15 = IPPROTO_UDP 17), so a
+ * successful in-place decrypt passes esp_remove_trailer instead of feeding it
+ * garbage, which keeps XfrmInStateProtoError flat on success. Caller diffs
+ * /proc/net/xfrm_stat around the call. */
+static int probe_write(struct Reporter *reporter, const char *path) {
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        REPORTLN("xfrm probe: open %s failed: %s", path, strerror(errno));
+        return -1;
+    }
+
+    char orig[32];
+    for (int i = 0; i < 32; i++) orig[i] = (char)i;
+    if (pwrite(fd, orig, 32, 0) != 32) {
+        REPORTLN("xfrm probe: pwrite failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    uint8_t want[16] = {0};
+    want[14] = 0;    /* padlen */
+    want[15] = 17;   /* IPPROTO_UDP: valid next header */
+    int rc = patch_file_cbc(path, (const char *)want, 16, 0, 0, reporter);
+
+    uint8_t got[16] = {0};
+    ssize_t n = pread(fd, got, 16, 0);
+    close(fd);
+    if (rc != 0) {
+        REPORTLN("xfrm probe: send failed");
+        return -1;
+    }
+    if (n == 16 && memcmp(got, want, 16) == 0) {
+        REPORTLN("xfrm probe: OK, decrypt ran and wrote the page cache");
+        return 0;
+    }
+    REPORTLN("xfrm probe: page cache unchanged");
+    return 1;
+}
+
+/* Snapshot /proc/net/xfrm_stat. Shell uid only; an app run prints a hint. */
+static void dump_xfrm_stat(struct Reporter *reporter) {
+    FILE *f = fopen("/proc/net/xfrm_stat", "r");
+    if (!f) {
+        REPORTLN("(read /proc/net/xfrm_stat from adb shell, or rerun via shizuku)");
+        return;
+    }
+    char line[128];
+    while (fgets(line, sizeof(line), f))
+        fputs(line, stdout);
+    fclose(f);
+}
+
 /* Distinguish "the XFRM write never landed" from "it landed in a copy, not the
  * page cache". Writes into a private f2fs file, which rules out APEX/erofs and
  * page-cache aliasing as the cause. */
@@ -283,65 +336,19 @@ static void xfrm_probe(struct Reporter *reporter) {
     char path[256];
     snprintf(path, sizeof(path), "%s/dfprobe", g_data_dir);
 
-    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        REPORTLN("xfrm probe: open %s failed: %s", path, strerror(errno));
-        return;
-    }
+    REPORTLN("xfrm probe: xfrm_stat BEFORE");
+    dump_xfrm_stat(reporter);
 
-    char orig[32], want[32];
-    for (int i = 0; i < 32; i++) orig[i] = (char)i;
-    memcpy(want, orig, 32);
-    want[0] ^= 0xff;
-    want[1] ^= 0xff;
-    if (pwrite(fd, orig, 32, 0) != 32) {
-        REPORTLN("xfrm probe: pwrite failed: %s", strerror(errno));
-        close(fd);
-        unlink(path);
-        return;
-    }
-
-    int rc = patch_file_cbc(path, want, 16, 0, 0, reporter);
-
-    uint8_t got[16] = {0};
-    ssize_t n = pread(fd, got, 16, 0);
-    close(fd);
+    int rc = probe_write(reporter, path);
     unlink(path);
 
-    if (rc != 0) {
-        REPORTLN("xfrm probe: write failed, the SA or the socket is the problem");
-        return;
-    }
-    if (n == 16 && memcmp(got, want, 16) == 0) {
-        REPORTLN("xfrm probe: OK, XFRM wrote through to the page cache. "
-                 "The APEX file or its filesystem is the problem");
-        return;
-    }
+    REPORTLN("xfrm probe: xfrm_stat AFTER");
+    dump_xfrm_stat(reporter);
 
-    /* Nothing landed even on f2fs. The kernel moves xfrm_stat counters once a
-     * packet reaches SA lookup. Nonzero counters mean the ESP packet arrived
-     * and was decrypted into a copy; all zeros mean it never arrived as ESP.
-     * /proc/net needs shell uid, which the shizuku run has. */
-    FILE *f = fopen("/proc/net/xfrm_stat", "r");
-    if (!f) {
-        REPORTLN("xfrm probe: unchanged and /proc/net/xfrm_stat unreadable");
-        REPORTLN("(readable from adb shell, or run this binary via shizuku)");
-        return;
-    }
-    int nonzero = 0;
-    char line[128];
-    while (fgets(line, sizeof(line), f)) {
-        int v;
-        char name[64];
-        if (sscanf(line, "%63s %d", name, &v) == 2 && v != 0) {
-            fputs(line, stdout);
-            nonzero = 1;
-        }
-    }
-    fclose(f);
-    if (!nonzero)
-        REPORTLN("xfrm probe: unchanged, all xfrm counters zero: the packet "
-                 "never arrived as ESP");
+    /* XfrmInStateProtoError moved: the packet matched the SA but the AEAD
+     * auth failed (-EBADMSG), so the decrypt never ran at all. Flat counters
+     * with an unchanged page means the decrypt ran on a copied skb. */
+    (void)rc;
 }
 
 extern char libcxx_start[];

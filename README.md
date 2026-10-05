@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> If you want to use your own ksud binary, you must compile from my fork: https://github.com/diabl0w/KernelSU
+> A KernelSU manager must be installed. The app copies that manager's own `libksud.so` to the path the kernel module runs, and the module calls it with the manager's package name, so userspace stays in step with the manager.
 
 # DFRoot [DirtyFrag (CVE-2026-43284)]
 
@@ -15,7 +15,6 @@ Credits:
 
 - Start on Boot
 - Automatic soft reboot 
-- RO Partition Protection
 - Hide Selinux Modifications in KSU
 - Shizuku not needed — regain root without WiFi!
 
@@ -60,16 +59,23 @@ The exploit uses this primitive to patch shellcode into `libc++.so` in the kerne
 5. **dirtyfrag.ko init** (runs as `vendor_modprobe`, uid=0) — The KO is loaded by `insmod` in the `vendor_modprobe` SELinux domain:
    - Writes `false` to `selinux_state` (global permissive)
    - Bypasses DEFEX via kprobes
-   - Calls `call_usermodehelper` to run launch the `ksud` binary from our app's data dir
+   - Calls `call_usermodehelper` to run `ksud` from our app's device-protected data dir, with `late-load --package-name <manager>`, where the package name comes through the insmod arguments
    - Module returns `-E2BIG` immediately after to self-unload
 
 ## Usage
 
-Install KernelSU Manager (download & unzip manager file) from actions flow: 
-https://github.com/tiann/KernelSU/actions/runs/35973514328
+Install the KernelSU manager app.
+
+The APK and the kernel modules are built by GitHub Actions. Download the `dirtyfrag-apk` artifact from the latest run of the Build workflow and install it:
 
 ```sh
-./build.sh
 adb install -r dirtyfrag.apk
+```
+
+To build locally instead, build the modules first, then the app:
+
+```sh
+cd dirtyfrag-lkm && ./build.sh
+cd .. && ./build.sh
 ```
 

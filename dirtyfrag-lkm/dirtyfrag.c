@@ -3,7 +3,6 @@
 #include <linux/kmod.h>
 #include <linux/kprobes.h>
 #include <linux/module.h>
-#include <linux/namei.h>
 #include <linux/ptrace.h>
 
 MODULE_LICENSE("GPL");
@@ -13,26 +12,9 @@ typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 typedef void *(*umh_setup_t)(const char *path, char **argv, char **envp, gfp_t gfp,
                              void *init, void *cleanup, void *data);
 typedef int (*umh_exec_t)(void *info, int wait);
-typedef int  (*kern_path_t)(const char *, unsigned int, struct path *);
-typedef int  (*invalidate_t)(struct address_space *);
-typedef void (*path_put_t)(const struct path *);
 
-static void drop_path_cache(kern_path_t kern_path_fn, invalidate_t invalidate_fn,
-                             path_put_t path_put_fn, const char *path)
-{
-    struct path p;
-    if (!kern_path_fn || !invalidate_fn || !path_put_fn) {
-        pr_err("dfroot: drop_path_cache: symbols missing\n");
-        return;
-    }
-    if (kern_path_fn(path, LOOKUP_FOLLOW, &p)) {
-        pr_err("dfroot: drop_path_cache: kern_path failed for %s\n", path);
-        return;
-    }
-    invalidate_fn(p.dentry->d_inode->i_mapping);
-    path_put_fn(&p);
-    pr_info("dfroot: cleared page cache for %s\n", path);
-}
+static int soft_reboot;
+module_param(soft_reboot, int, 0);
 
 static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
 {
@@ -47,23 +29,22 @@ static int __nocfi __init dirtyfrag_init(void)
     kallsyms_lookup_name_t get_addr;
     umh_setup_t umh_setup;
     umh_exec_t  umh_exec;
-    kern_path_t   kern_path_fn;
-    invalidate_t  invalidate_fn;
-    path_put_t    path_put_fn;
     bool *selinux_state;
     struct kprobe kln_kp;
     struct kprobe defex_kp;
     struct kprobe umh_kp;
-    int defex_ok, umh_ok;
     void *info;
     int ret;
 
-    static const char sh[]        = "/system/bin/sh";
-    static const char bootstrap[] = "/data/user_de/0/df.root/bootstrap";
-    static char cmd[128];
+    static const char sh[]   = "/system/bin/sh";
+    static const char ksud[] = "/data/user_de/0/df.root/ksud";
+    static char cmd[256];
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
-    snprintf(cmd, sizeof(cmd), "touch /dev/dfm0; exec %s", bootstrap);
+    snprintf(cmd, sizeof(cmd),
+             "%s late-load --package-name me.weishu.kernelsu --ro-partitions%s"
+             " && touch /dev/dfm0 || touch /dev/dfm1",
+             ksud, soft_reboot ? " --soft-reboot" : "");
 
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
     if (register_kprobe(&kln_kp) < 0) {
@@ -83,16 +64,14 @@ static int __nocfi __init dirtyfrag_init(void)
 
     defex_kp = (struct kprobe){ .addr = (kprobe_opcode_t *)get_addr("task_defex_enforce"),
                                 .pre_handler = defex_pre_handler };
-    defex_ok = register_kprobe(&defex_kp) == 0;
-    if (!defex_ok)
+    if (register_kprobe(&defex_kp) < 0)
         pr_err("dfroot: task_defex_enforce not found\n");
     else
         pr_info("dfroot: task_defex_enforce hooked\n");
 
     umh_kp = (struct kprobe){ .addr = (kprobe_opcode_t *)get_addr("task_defex_user_exec"),
                               .pre_handler = defex_pre_handler };
-    umh_ok = register_kprobe(&umh_kp) == 0;
-    if (!umh_ok)
+    if (register_kprobe(&umh_kp) < 0)
         pr_err("dfroot: task_defex_user_exec not found\n");
     else
         pr_info("dfroot: task_defex_user_exec hooked\n");
@@ -102,33 +81,22 @@ static int __nocfi __init dirtyfrag_init(void)
     if (!umh_setup || !umh_exec) {
         pr_err("dfroot: usermodehelper symbols missing (setup=%px exec=%px)\n",
                umh_setup, umh_exec);
-        if (defex_ok) unregister_kprobe(&defex_kp);
-        if (umh_ok)   unregister_kprobe(&umh_kp);
         return -EINVAL;
     }
 
     info = umh_setup(sh, argv, envp, GFP_KERNEL, NULL, NULL, NULL);
     if (!info) {
         pr_err("dfroot: usermodehelper_setup: returned NULL\n");
-        if (defex_ok) unregister_kprobe(&defex_kp);
-        if (umh_ok)   unregister_kprobe(&umh_kp);
         return -EINVAL;
     }
     /* bypass CONFIG_STATIC_USERMODEHELPER_PATH="" overriding path to "" */
     ((struct subprocess_info *)info)->path = sh;
 
     ret = umh_exec(info, UMH_WAIT_PROC);
-    pr_info("dfroot: usermodehelper_exec(%s) returned %d\n", bootstrap, ret);
+    pr_info("dfroot: usermodehelper_exec(%s) returned %d\n", ksud, ret);
 
-    if (defex_ok) unregister_kprobe(&defex_kp);
-    if (umh_ok)   unregister_kprobe(&umh_kp);
-
-    kern_path_fn  = (kern_path_t) get_addr("kern_path");
-    invalidate_fn = (invalidate_t)get_addr("invalidate_inode_pages2");
-    path_put_fn   = (path_put_t)  get_addr("path_put");
-    drop_path_cache(kern_path_fn, invalidate_fn, path_put_fn,
-                    "/apex/com.android.runtime/bin/crash_dump64");
-
+    if (defex_kp.addr) unregister_kprobe(&defex_kp);
+    if (umh_kp.addr)   unregister_kprobe(&umh_kp);
     return -E2BIG; /* return any error to unload module */
 }
 

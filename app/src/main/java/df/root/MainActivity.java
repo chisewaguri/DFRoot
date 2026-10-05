@@ -1,14 +1,8 @@
 package df.root;
 
-import android.content.Context;
-import android.content.Intent;
+import android.content.ComponentName;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
-import android.view.Menu;
-import android.view.MenuItem;
-import androidx.appcompat.app.AlertDialog;
-import java.util.ArrayList;
-import java.util.List;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -28,7 +22,6 @@ public class MainActivity extends AppCompatActivity implements IReporter {
     private static final String TAG = "dfroot";
 
     private ActivityMainBinding binding;
-    private Context mDeCtx;
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Executor mExec = Executors.newSingleThreadExecutor();
 
@@ -44,67 +37,45 @@ public class MainActivity extends AppCompatActivity implements IReporter {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        mDeCtx = createDeviceProtectedStorageContext();
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
         setSupportActionBar(binding.toolbar);
-
-        if (!isSuManagerInstalled()) {
-            new AlertDialog.Builder(this)
-                .setTitle("SU Manager Required")
-                .setMessage(
-                    "SU Manager is not installed.\n\n" +
-                    "Samsung devices: install from github.com/diabl0w/KernelSU\n\n" +
-                    "Other devices: install from github.com/tiann/KernelSU")
-                .setCancelable(false)
-                .setPositiveButton("Exit", (d, w) -> finish())
-                .show();
-            return;
-        }
 
         if (new File("/dev/df").exists()) binding.btnRun.setEnabled(false);
 
         binding.btnRun.setOnClickListener(v -> {
             binding.btnRun.setEnabled(false);
             binding.outputView.setText("");
-            mExec.execute(this::runExploit);
+            boolean softReboot = binding.switchManualSoftReboot.isChecked();
+            mExec.execute(() -> runExploit(softReboot));
         });
 
+        ComponentName bootReceiver = new ComponentName(this, BootReceiver.class);
+        int state = getPackageManager().getComponentEnabledSetting(bootReceiver);
+        boolean bootEnabled = state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+        binding.switchBootStart.setChecked(bootEnabled);
+        binding.switchBootStart.setOnCheckedChangeListener((btn, checked) -> {
+            getPackageManager().setComponentEnabledSetting(bootReceiver,
+                checked ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                        : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP);
+            binding.switchAutoSoftReboot.setEnabled(checked);
+        });
+
+        boolean autoSoftReboot = createDeviceProtectedStorageContext()
+                .getSharedPreferences("dfroot", MODE_PRIVATE)
+                .getBoolean("auto_soft_reboot", true);
+        binding.switchAutoSoftReboot.setChecked(autoSoftReboot);
+        binding.switchAutoSoftReboot.setEnabled(bootEnabled);
+        binding.switchAutoSoftReboot.setOnCheckedChangeListener((btn, checked) ->
+            createDeviceProtectedStorageContext()
+                .getSharedPreferences("dfroot", MODE_PRIVATE)
+                .edit().putBoolean("auto_soft_reboot", checked).apply());
     }
 
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.main_menu, menu);
-        return true;
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        if (item.getItemId() == R.id.action_settings) {
-            startActivity(new Intent(this, SettingsActivity.class));
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
-    }
-
-    private boolean isSuManagerInstalled() {
-        List<String> installed = new ArrayList<>();
-        for (String pkg : ExploitRunner.KNOWN_SU_MANAGERS) {
-            try {
-                getPackageManager().getPackageInfo(pkg, 0);
-                installed.add(pkg);
-            } catch (PackageManager.NameNotFoundException ignored) {}
-        }
-        if (installed.isEmpty()) return false;
-        var prefs = mDeCtx.getSharedPreferences(ExploitRunner.PREFS_NAME, MODE_PRIVATE);
-        if (!prefs.contains(ExploitRunner.PREF_SU_MANAGER))
-            prefs.edit().putString(ExploitRunner.PREF_SU_MANAGER, installed.get(0)).apply();
-        return true;
-    }
-
-    private void runExploit() {
+    private void runExploit(boolean softReboot) {
         try {
-            int rc = ExploitRunner.run(mDeCtx, this);
+            int rc = ExploitRunner.run(this, this, softReboot);
             String msg = rc == 0 ? "DFRoot: SUCCESS"
                        : rc == 1 ? "DFRoot FAILED: ksud exited with error"
                        : rc == 2 ? "DFRoot FAILED: check logs"

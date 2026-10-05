@@ -619,7 +619,7 @@ int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
     };
     int seen[sizeof(markers)/sizeof(markers[0])] = {0};
 
-    for (int elapsed = 0; elapsed < 5000; elapsed += 10) {
+    for (int elapsed = 0; elapsed < 7000; elapsed += 10) {
         usleep(10000);
         for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
             if (!seen[j] && has_marker(markers[j].path)) {

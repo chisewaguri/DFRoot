@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(exp)
+project(dfroot)
 enable_language(ASM)
 
 set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} -I${CMAKE_SOURCE_DIR}")
@@ -20,8 +20,15 @@ add_custom_command(
 )
 add_custom_target(splicehelper_bin DEPENDS "${SPLICEHELPER}")
 
-add_library(exp SHARED exp.c libcxx.S elf_parser.c)
-add_dependencies(exp splicehelper_bin)
+# Standalone exploit binary. AGP only packages lib*.so, so the executable is
+# named libdfroot.so and lands in the APK's native lib dir. The app execs it
+# from there, the app data dir is not executable by an untrusted app.
+add_executable(dfroot dfroot.c exp.c libcxx.S elf_parser.c)
+add_dependencies(dfroot splicehelper_bin)
+set_target_properties(dfroot PROPERTIES
+    PREFIX "lib"
+    SUFFIX ".so"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 
 set_source_files_properties(exp.c PROPERTIES OBJECT_DEPENDS
     "${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android12-5.10.ko;\
@@ -33,5 +40,5 @@ ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android16-6.12.ko;\
 ${CMAKE_SOURCE_DIR}/ko/dirtyfrag-android17-6.18.ko;\
 ${CMAKE_SOURCE_DIR}/splicehelper")
 
-target_link_libraries(exp log)
-target_link_options(exp PRIVATE -Wl,-z,max-page-size=16384)
+target_link_libraries(dfroot log)
+target_link_options(dfroot PRIVATE -Wl,-z,max-page-size=16384)

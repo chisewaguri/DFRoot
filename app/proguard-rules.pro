@@ -1,8 +1,2 @@
-# Keep the JNI entry point the native exploit registers.
--keepclasseswithmembernames class df.root.ExploitRunner {
-    native <methods>;
-}
-
-# The reporter is called back from native code.
--keep interface df.root.IReporter { *; }
--keep class df.root.ExploitRunner { *; }
+# Nothing to keep explicitly: the exploit runs in its own process and reports
+# over stdout, so there is no JNI entry point or native callback to preserve.

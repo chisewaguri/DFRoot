@@ -31,7 +31,7 @@ public class BootReceiver extends BroadcastReceiver implements IReporter {
         wl.acquire();
         new Thread(() -> {
             try {
-                int rc = ExploitRunner.run(deCtx, this, softReboot);
+                int rc = ExploitRunner.run(deCtx, this, softReboot, false);
                 Log.i(TAG, "boot: exploit rc=" + rc);
             } catch (Exception e) {
                 Log.e(TAG, "boot: exploit exception", e);

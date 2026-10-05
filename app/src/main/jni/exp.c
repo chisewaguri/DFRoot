@@ -319,12 +319,29 @@ static void xfrm_probe(struct Reporter *reporter) {
     }
 
     /* Nothing landed even on f2fs. The kernel moves xfrm_stat counters once a
-     * packet reaches SA lookup, so a bump between runs means the decrypt path
-     * ran, a flat line means it never arrived as ESP. Apps cannot read
-     * /proc/net (blocked for targetSdk 28+), so this is an adb step. */
-    REPORTLN("xfrm probe: unchanged. From adb, diff /proc/net/xfrm_stat");
-    REPORTLN("around a run: bumps mean the ESP packet reached SA lookup and");
-    REPORTLN("was decrypted into a copy, flat means it never arrived as ESP");
+     * packet reaches SA lookup. Nonzero counters mean the ESP packet arrived
+     * and was decrypted into a copy; all zeros mean it never arrived as ESP.
+     * /proc/net needs shell uid, which the shizuku run has. */
+    FILE *f = fopen("/proc/net/xfrm_stat", "r");
+    if (!f) {
+        REPORTLN("xfrm probe: unchanged and /proc/net/xfrm_stat unreadable");
+        REPORTLN("(readable from adb shell, or run this binary via shizuku)");
+        return;
+    }
+    int nonzero = 0;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        int v;
+        char name[64];
+        if (sscanf(line, "%63s %d", name, &v) == 2 && v != 0) {
+            fputs(line, stdout);
+            nonzero = 1;
+        }
+    }
+    fclose(f);
+    if (!nonzero)
+        REPORTLN("xfrm probe: unchanged, all xfrm counters zero: the packet "
+                 "never arrived as ESP");
 }
 
 extern char libcxx_start[];

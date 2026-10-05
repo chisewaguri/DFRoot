@@ -105,6 +105,12 @@
                 android:text="Launch Root" />
 
             <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/switchShizuku"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Run as shell (Shizuku)" />
+
+            <com.google.android.material.materialswitch.MaterialSwitch
                 android:id="@+id/switchManualSoftReboot"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

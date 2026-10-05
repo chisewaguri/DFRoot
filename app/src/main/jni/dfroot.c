@@ -18,6 +18,8 @@ int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot);
 
+extern const char *g_data_dir;
+
 static struct Reporter g_reporter;
 static struct Reporter *reporter = &g_reporter;
 
@@ -146,6 +148,9 @@ int main(int argc, char **argv) {
     if (copy_file(ksud_src, KSUD_DEST) != 0)
         return 1;
     REPORTLN("ksud staged to: %s (manager: %s)", KSUD_DEST, ksud_src);
+
+    /* dfprobe is written next to the staged ksud, in the app's own f2fs dir. */
+    g_data_dir = "/data/user_de/0/df.root";
 
     const char *ko_target = detect_ko_target();
     REPORTLN("found ko_target: %s", ko_target);

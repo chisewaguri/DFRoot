@@ -1,4 +1,8 @@
-<resources>
-    <style name="Base.Theme.DirtyFrag" parent="Theme.Material3.DayNight.NoActionBar" />
-    <style name="Theme.DirtyFrag" parent="Base.Theme.DirtyFrag" />
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.DirtyFrag" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+    </style>
 </resources>

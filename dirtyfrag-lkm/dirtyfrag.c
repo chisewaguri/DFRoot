@@ -66,9 +66,23 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
         (struct module *(*)(unsigned long))get_addr("__module_address");
     struct tracepoint_func *funcs, *f;
     bool is_vr = false;
+    struct module *(*find_mod)(const char *) =
+        (struct module *(*)(const char *))get_addr("find_module");
 
     if (disable_vr) {
         pr_info("dfroot: disable_vr set; sys_exit left alone\n");
+        return;
+    }
+    /* touch nothing unless a vr* module is actually loaded. find_module is
+     * cheap and safe on every KMI; the tracepoint walk below is not (the
+     * 5.10 kernels panic on it), so this gate keeps 5.10 devices intact. */
+    if (find_mod) {
+        if (!find_mod("vr")) {
+            pr_info("dfroot: no vr module loaded; sys_exit untouched\n");
+            return;
+        }
+    } else {
+        pr_info("dfroot: find_module unavailable; sys_exit untouched\n");
         return;
     }
     if (!tp) {

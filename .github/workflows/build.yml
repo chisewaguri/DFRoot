@@ -1,0 +1,107 @@
+name: Build DirtyFrag
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lkm:
+    name: Build dirtyfrag.ko for ${{ matrix.kmi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.10
+          - android13-5.15
+          - android14-5.15
+          - android15-6.6
+          - android16-6.12
+          - android17-6.18
+    container:
+      image: ghcr.io/ylarod/ddk-min:${{ matrix.kmi }}-20260828
+      options: --privileged
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
+
+    - name: Build and strip dirtyfrag.ko
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        cd dirtyfrag-lkm
+        make
+        cd ..
+
+        cp dirtyfrag-lkm/dirtyfrag.ko "dirtyfrag-${{ matrix.kmi }}.ko"
+
+        # Size diet: this ko is written through the exploit page by page.
+        # --strip-unneeded keeps only load-relevant symbols (undefined imports etc.);
+        # the -R removals drop loader-ignored sections. Removing the empty .hyp.*
+        # sections also repacks the file, reclaiming ~2.2 KiB of alignment padding.
+        # (13.4 KiB -> ~7.8 KiB, i.e. 4 pages -> 2 pages.)
+        llvm-objcopy --strip-unneeded \
+          -R .comment -R .note.gnu.build-id -R .note.gnu.property -R .note.Linux -R .note.GNU-stack \
+          -R .BTF -R .BTF.base -R .llvm_addrsig \
+          -R .hyp.text -R .hyp.bss -R .hyp.rodata -R .hyp.event_ids \
+          -R .hyp.patchable_function_entries -R .hyp.data \
+          "dirtyfrag-${{ matrix.kmi }}.ko"
+
+        mkdir -p app/src/main/jni/ko
+        mv "dirtyfrag-${{ matrix.kmi }}.ko" "app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko"
+        ls -l "app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko"
+
+    - name: Upload dirtyfrag.ko artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: dirtyfrag-ko-${{ matrix.kmi }}
+        path: app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko
+
+  build-apk:
+    name: Build DirtyFrag APK
+    needs: build-lkm
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
+
+    - name: Download dirtyfrag.ko artifacts
+      uses: actions/download-artifact@v8
+      with:
+        path: ko
+        pattern: dirtyfrag-ko-*
+        merge-multiple: true
+
+    - name: Place dirtyfrag.ko into jni
+      run: |
+        mkdir -p app/src/main/jni/ko
+        cp ko/*.ko app/src/main/jni/ko/
+        ls -l app/src/main/jni/ko/
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v6.0.1
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: Build release APK
+      run: ./gradlew :app:assembleRelease
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: dirtyfrag-apk
+        path: app/build/outputs/apk/release/dirtyfrag.apk

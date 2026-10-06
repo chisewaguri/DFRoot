@@ -17,7 +17,9 @@ Credits:
 
 - Start on Boot
 - Automatic soft reboot 
+- RO Partition Protection
 - Hide Selinux Modifications in KSU
+- Disable all KernelSU modules, to recover from a broken one
 - Shizuku not needed — regain root without WiFi!
 
 > [!WARNING]

@@ -130,7 +130,7 @@ static int __nocfi __init dirtyfrag_init(void)
     int ret;
 
     static const char sh[] = "/system/bin/sh";
-    static char cmd[768];
+    static char cmd[1536];
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
 
@@ -138,22 +138,28 @@ static int __nocfi __init dirtyfrag_init(void)
      * through insmod. No staged copy: preferring one made root never land, and
      * under Shizuku the exploit runs as shell and cannot stage it anyway. Skip
      * the load when kernelsu is already there. Report through the markers the
-     * exploit polls for, so an already-loaded module still reads as success. */
-    if (soft_reboot)
-        snprintf(cmd, sizeof(cmd),
-                 "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
-                 "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
-                 "\"$KSUD\" late-load --package-name %s || { touch /dev/dfm1; exit 1; }; "
-                 "touch /dev/dfm0; \"$KSUD\" soft-reboot",
-                 package_name, package_name);
-    else
-        snprintf(cmd, sizeof(cmd),
-                 "if grep -q '^kernelsu ' /proc/modules; then touch /dev/dfm0; exit 0; fi; "
-                 "KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
-                 "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
-                 "\"$KSUD\" late-load --package-name %s && touch /dev/dfm0 || touch /dev/dfm1",
-                 package_name, package_name);
+     * exploit polls for, so an already-loaded module still reads as success.
+     *
+     * Partition RO and disable-modules used to run in the app's bootstrap
+     * before it was dropped; this shell is already uid 0, so it does both
+     * itself and the exploit binary needs no change. disable-modules reads the
+     * app's device-protected pref, so a broken module cannot bootloop the
+     * device on the next boot. */
+    snprintf(cmd, sizeof(cmd),
+             "P=/data/user_de/0/df.root/shared_prefs/dfroot.xml; "
+             "if grep -q 'name=\"disable_modules\"[^>]*value=\"true\"' \"$P\" 2>/dev/null; then "
+             "for m in /data/adb/modules/*/; do [ -d \"$m\" ] && touch \"$m/disable\"; done; fi; "
+             "for b in /dev/block/by-name/*; do "
+             "n=${b##*/}; "
+             "case \"$n\" in super|misc|steady|*_a|*_b) blockdev --setro \"$b\" 2>/dev/null;; esac; "
+             "done; "
+             "if grep -q '^kernelsu ' /proc/modules; then exit 0; fi; "
+             "KSUD=$(find /data/app -path '*/%s*/lib/arm64/libksud.so' 2>/dev/null | head -1); "
+             "[ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud; "
+             "\"$KSUD\" late-load --package-name %s %s",
+             package_name, package_name,
+             soft_reboot ? "|| { touch /dev/dfm1; exit 1; }; touch /dev/dfm0; \"$KSUD\" soft-reboot"
+                         : "&& touch /dev/dfm0 || touch /dev/dfm1");
 
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
     if (register_kprobe(&kln_kp) < 0) {

@@ -81,6 +81,17 @@ public class MainActivity extends AppCompatActivity implements IReporter {
             createDeviceProtectedStorageContext()
                 .getSharedPreferences("dfroot", MODE_PRIVATE)
                 .edit().putBoolean("auto_soft_reboot", checked).apply());
+
+        // The LKM's root shell reads this key from the device-protected prefs
+        // file, so the switch only has to write it.
+        boolean disableModules = createDeviceProtectedStorageContext()
+                .getSharedPreferences("dfroot", MODE_PRIVATE)
+                .getBoolean("disable_modules", false);
+        binding.switchDisableModules.setChecked(disableModules);
+        binding.switchDisableModules.setOnCheckedChangeListener((btn, checked) ->
+            createDeviceProtectedStorageContext()
+                .getSharedPreferences("dfroot", MODE_PRIVATE)
+                .edit().putBoolean("disable_modules", checked).apply());
     }
 
     private void runExploit(boolean softReboot, boolean useShizuku) {

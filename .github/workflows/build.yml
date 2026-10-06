@@ -1,100 +1,107 @@
-name: Build
+name: Build DirtyFrag
 
 on:
   push:
-    branches: [master, main]
-    tags: ['v*']
+    branches:
+      - master
   pull_request:
-    branches: [master, main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-lkms:
-    name: LKMs / ${{ matrix.kmi }}
+  build-lkm:
+    name: Build dirtyfrag.ko for ${{ matrix.kmi }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         kmi:
           - android12-5.10
           - android13-5.10
           - android13-5.15
           - android14-5.15
-          - android14-6.1
           - android15-6.6
           - android16-6.12
           - android17-6.18
     container:
       image: ghcr.io/ylarod/ddk-min:${{ matrix.kmi }}-20260828
       options: --privileged
+
     steps:
-      - uses: actions/checkout@v7
+    - name: Checkout source code
+      uses: actions/checkout@v7
 
-      - name: Build dfroot.ko
-        run: |
-          cd lkm
-          make -j$(nproc)
-          llvm-objcopy --strip-unneeded \
-            -R .comment -R .note.gnu.build-id -R .note.gnu.property \
-            -R .note.Linux -R .note.GNU-stack \
-            -R .BTF -R .BTF.base -R .llvm_addrsig \
-            -R .hyp.text -R .hyp.bss -R .hyp.rodata -R .hyp.event_ids \
-            -R .hyp.patchable_function_entries -R .hyp.data dfroot.ko
-          mkdir -p $GITHUB_WORKSPACE/out
-          cp dfroot.ko $GITHUB_WORKSPACE/out/dfroot-${{ matrix.kmi }}.ko
-          make clean
+    - name: Build and strip dirtyfrag.ko
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Upload dfroot.ko
-        uses: actions/upload-artifact@v7
-        with:
-          name: df-lkm-${{ matrix.kmi }}
-          path: out/dfroot-${{ matrix.kmi }}.ko
+        cd dirtyfrag-lkm
+        make
+        cd ..
 
-  build-dfroot:
-    needs: build-lkms
+        cp dirtyfrag-lkm/dirtyfrag.ko "dirtyfrag-${{ matrix.kmi }}.ko"
+
+        # Size diet: this ko is written through the exploit page by page.
+        # --strip-unneeded keeps only load-relevant symbols (undefined imports etc.);
+        # the -R removals drop loader-ignored sections. Removing the empty .hyp.*
+        # sections also repacks the file, reclaiming ~2.2 KiB of alignment padding.
+        # (13.4 KiB -> ~7.8 KiB, i.e. 4 pages -> 2 pages.)
+        llvm-objcopy --strip-unneeded \
+          -R .comment -R .note.gnu.build-id -R .note.gnu.property -R .note.Linux -R .note.GNU-stack \
+          -R .BTF -R .BTF.base -R .llvm_addrsig \
+          -R .hyp.text -R .hyp.bss -R .hyp.rodata -R .hyp.event_ids \
+          -R .hyp.patchable_function_entries -R .hyp.data \
+          "dirtyfrag-${{ matrix.kmi }}.ko"
+
+        mkdir -p app/src/main/jni/ko
+        mv "dirtyfrag-${{ matrix.kmi }}.ko" "app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko"
+        ls -l "app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko"
+
+    - name: Upload dirtyfrag.ko artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: dirtyfrag-ko-${{ matrix.kmi }}
+        path: app/src/main/jni/ko/dirtyfrag-${{ matrix.kmi }}.ko
+
+  build-apk:
+    name: Build DirtyFrag APK
+    needs: build-lkm
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+    - name: Checkout source code
+      uses: actions/checkout@v7
 
-      - name: Validate signing config
-        run: |
-          if [ "${{ secrets.KEYSTORE }}" = "" ]; then
-            echo "::error::Signing secrets not configured. KEYSTORE secret is required for release builds."
-            exit 1
-          fi
+    - name: Download dirtyfrag.ko artifacts
+      uses: actions/download-artifact@v8
+      with:
+        path: ko
+        pattern: dirtyfrag-ko-*
+        merge-multiple: true
 
-      - name: Create signing.properties
-        run: |
-          echo KEYSTORE_FILE=../keystore.jks > signing.properties
-          echo KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} >> signing.properties
-          echo KEY_ALIAS=${{ secrets.KEY_ALIAS }} >> signing.properties
-          echo KEY_PASSWORD=${{ secrets.KEY_PASSWORD }} >> signing.properties
-          echo ${{ secrets.KEYSTORE }} | base64 --decode > keystore.jks
+    - name: Place dirtyfrag.ko into jni
+      run: |
+        mkdir -p app/src/main/jni/ko
+        cp ko/*.ko app/src/main/jni/ko/
+        ls -l app/src/main/jni/ko/
 
-      - name: Download DF LKMs
-        uses: actions/download-artifact@v7
-        with:
-          pattern: df-lkm-*
-          merge-multiple: true
-          path: app/src/main/jni/ko/
+    - name: Set up JDK 17
+      uses: actions/setup-java@v6.0.1
+      with:
+        distribution: temurin
+        java-version: '17'
 
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: 21
+    - name: Build release APK
+      run: ./gradlew :app:assembleRelease
 
-      - uses: gradle/actions/setup-gradle@v6
-
-      - name: Build DFRoot APK
-        run: ./gradlew :app:assembleRelease
-
-      - name: Upload DFRoot APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: DFRoot
-          path: app/build/outputs/apk/release/DFRoot_*.apk
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: app/build/outputs/apk/release/DFRoot_*.apk
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: dirtyfrag-apk
+        path: app/build/outputs/apk/release/dirtyfrag.apk

@@ -24,12 +24,14 @@ public class BootReceiver extends BroadcastReceiver implements IReporter {
         }
         Log.i(TAG, "boot: " + intent.getAction());
         final Context deCtx = context.createDeviceProtectedStorageContext();
+        boolean softReboot = deCtx.getSharedPreferences("dfroot", Context.MODE_PRIVATE)
+                .getBoolean("auto_soft_reboot", true);
         PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
         PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dfroot:boot");
         wl.acquire();
         new Thread(() -> {
             try {
-                int rc = ExploitRunner.run(deCtx, this);
+                int rc = ExploitRunner.run(deCtx, this, softReboot, false);
                 Log.i(TAG, "boot: exploit rc=" + rc);
             } catch (Exception e) {
                 Log.e(TAG, "boot: exploit exception", e);

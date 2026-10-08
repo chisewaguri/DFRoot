@@ -132,6 +132,7 @@
   .equ SYS_waitid,          95
   .equ SYS_unshare,         97
   .equ SYS_futex,           98
+  .equ SYS_nanosleep,      101
   .equ SYS_kill,           129
   .equ SYS_reboot,         142
   .equ SYS_setuid,         146

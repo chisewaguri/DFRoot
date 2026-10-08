@@ -43,15 +43,13 @@ static int __nocfi __init dfroot_init(void)
     int ret;
 
     static const char sh[]        = "/system/bin/sh";
-    static const char bootstrap[] = "/data/user_de/0/df.root/bootstrap";
     static char cmd[512];
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c", cmd, NULL };
     snprintf(cmd, sizeof(cmd),
              "rmmod oplus_secure_harden 2>/dev/null;"          //
              " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
-             " rmmod oplus_security_guard 2>/dev/null;"        //
-             " touch /dev/dfm0; exec %s", bootstrap);
+             " rmmod oplus_security_guard 2>/dev/null;");      //
 
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
     if (register_kprobe(&kln_kp) < 0) {
@@ -104,7 +102,7 @@ static int __nocfi __init dfroot_init(void)
     else
         pr_info("dfroot: task_defex_user_exec hooked\n");
 
-    // Launch bootstrap
+    // Oplus modules block exec, so unload them before bootstrap runs
     umh_setup = (umh_setup_t)get_addr("call_usermodehelper_setup");
     umh_exec  = (umh_exec_t)get_addr("call_usermodehelper_exec");
     if (!umh_setup || !umh_exec) {
@@ -122,7 +120,7 @@ static int __nocfi __init dfroot_init(void)
     ((struct subprocess_info *)info)->path = sh;
 
     ret = umh_exec(info, UMH_WAIT_PROC);
-    pr_info("dfroot: usermodehelper_exec(%s) returned %d\n", bootstrap, ret);
+    pr_info("dfroot: usermodehelper_exec returned %d\n", ret);
 
 done:
     if (defex_enforce_ok) unregister_kprobe(&defex_enforce_kp);

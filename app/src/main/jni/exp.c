@@ -542,8 +542,9 @@ static int exploit(void) {
         int         rc;
     } markers[] = {
         { "/dev/df",    "libc++: loading custom module",                    -1 },
-        { "/dev/dfm0",  "bootstrap: started",               -1 },
+        { "/dev/dfm0",  "bootstrap: started",                               -1 },
         { "/dev/dfm1",  "bootstrap: loading app preferences file",          -1 },
+        { "/dev/dfmw2", "bootstrap: WARNING - selinux not permissive",      -1 },
         { "/dev/dfme0", "bootstrap: ERROR - reading prefs failed",           1 },
         { "/dev/dfm2",  "bootstrap: cloning zygote env",                    -1 },
         { "/dev/dfmw0", "bootstrap: WARNING - clone zygote env failed",     -1 },
@@ -552,8 +553,12 @@ static int exploit(void) {
         { "/dev/dfm4",  "bootstrap: disabling ksu modules",                 -1 },
         { "/dev/dfme1", "bootstrap: ERROR - disable modules failed",         1 },
         { "/dev/dfm5",  "bootstrap: starting SU daemon",                    -1 },
-        { "/dev/dfm6",  "ksud start: SUCCESS",                               0 },
+        { "/dev/dfm6",  "ksud start: SUCCESS",                              -1 },
         { "/dev/dfme2", "ksud start: ERROR - ksud nonzero exit",             1 },
+        { "/dev/dfme3", "soft-reboot: WARNING - child failed",              -1 },
+        { "/dev/dfmw3", "soft-reboot: WARNING - ksud exited but never rebooted", -1 },
+        { "/dev/dfm7",  "soft-reboot: started",                             -1 },
+        { "/dev/dfm8",  "bootstrap: done, root live",                        0 },
     };
     int seen[sizeof(markers)/sizeof(markers[0])] = {0};
 

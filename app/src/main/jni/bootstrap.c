@@ -10,6 +10,7 @@
 
 #define BLKROSET   0x125d
 #define KSUD       "/data/user_de/0/df.root/ksud"
+#define KSUD_ADB   "/data/adb/ksud"   // ksu domain can only exec the ksu_file type
 #define PREFS_PATH "/data/user_de/0/df.root/shared_prefs/dfroot.xml"
 #define MODULES_DIR "/data/adb/modules"
 
@@ -131,6 +132,26 @@ static int run(char *const argv[])
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+/* Fork+exec with a SELinux exec context, so the child starts in the ksu domain */
+static int run_ctx(char *const argv[], const char *exec_ctx)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        int fd = open("/proc/self/attr/exec", O_WRONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            write(fd, exec_ctx, strlen(exec_ctx));
+            close(fd);
+        }
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 static void touch(const char *path)
 {
     int fd = open(path, O_CREAT | O_WRONLY, 0666);
@@ -175,6 +196,63 @@ static int wait_permissive(void)
     return -1;
 }
 
+/* ksud exits 0 even when it bails before rebooting, so check the property it
+ * resets instead */
+static int boot_completed_is_zero(void)
+{
+    FILE *f = popen("/system/bin/getprop sys.boot_completed", "r");
+    if (!f)
+        return 0;
+    char buf[8] = { 0 };
+    int n = fread(buf, 1, sizeof(buf) - 1, f);
+    pclose(f);
+    return n > 0 && buf[0] == '0';
+}
+
+static int reboot_started(void)
+{
+    for (int i = 0; i < 40; i++) {
+        if (boot_completed_is_zero())
+            return 1;
+        usleep(50000);
+    }
+    return 0;
+}
+
+/* Restarting the framework mid-overlay leaves app_process unable to link
+ * libnativeloader.so, so wait for the late-load daemon to exit */
+static int late_load_alive(void)
+{
+    DIR *d = opendir("/proc");
+    if (!d)
+        return 0;
+    struct dirent *ent;
+    int alive = 0;
+    while ((ent = readdir(d))) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9')
+            continue;
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%s/cmdline", ent->d_name);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0)
+            continue;
+        char buf[256];
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0)
+            continue;
+        buf[n] = '\0';
+        /* require both, so an unrelated process mentioning "late-load" alone
+         * does not hold the wait open for the full timeout */
+        if (strstr(buf, "ksud") && strstr(buf, "late-load")) {
+            alive = 1;
+            break;
+        }
+    }
+    closedir(d);
+    return alive;
+}
+
 int main(void)
 {
     touch("/dev/dfm0");
@@ -208,14 +286,27 @@ int main(void)
 
     touch("/dev/dfm5");
     char **late_load;
-    if (soft_reboot)
-        late_load = (char *[]){ KSUD, "late-load", "--package-name", su_manager, "--soft-reboot", NULL };
-    else
-        late_load = (char *[]){ KSUD, "late-load", "--package-name", su_manager, NULL };
-    if (run(late_load) == 0)
-        touch("/dev/dfm6");
-    else
+    late_load = (char *[]){ KSUD, "late-load", "--package-name", su_manager, NULL };
+    if (run(late_load) != 0) {
         touch("/dev/dfme2");
+        return 0;
+    }
+    touch("/dev/dfm6");
 
+    if (soft_reboot) {
+        const char *ksud = access(KSUD_ADB, X_OK) == 0 ? KSUD_ADB : KSUD;
+        while (late_load_alive())
+            usleep(100000);
+        char *soft[] = { (char *)ksud, "soft-reboot", NULL };
+        if (run_ctx(soft, "u:r:ksu:s0") != 0)
+            touch("/dev/dfme3");
+        else if (reboot_started())
+            touch("/dev/dfm7");
+        else
+            touch("/dev/dfmw3");
+    }
+
+    /* Root is live whether or not the soft reboot ran, so this is the end. */
+    touch("/dev/dfm8");
     return 0;
 }

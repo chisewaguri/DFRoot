@@ -78,9 +78,7 @@ The exploit uses this primitive to patch shellcode into `libc++.so` in the kerne
 5. **dfroot.ko init** (runs as `vendor_modprobe`, uid=0) — The KO is loaded by `insmod` in the `vendor_modprobe` SELinux domain:
    - Writes `false` to `selinux_state` (global permissive)
    - Bypasses DEFEX via kprobes (if applicable)
-   - Calls `call_usermodehelper` to run our custom bootstrap code
-
-6. **bootstrap.c** — performs various functions and finally launches the su daemon from your installed SU Manager.
+   - Calls `call_usermodehelper` to run the installed manager's own `libksud.so` with `late-load --package-name <manager>`, then `soft-reboot` if enabled. The manager package and the two switches are read from the app's prefs file, so nothing is staged and userspace stays in step with the manager.
 
 ## Building
 

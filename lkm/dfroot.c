@@ -3,11 +3,17 @@
 #include <linux/kmod.h>
 #include <linux/kprobes.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/namei.h>
 #include <linux/ptrace.h>
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
+
+/* The exploit passes the app's data dir through insmod, so nothing about where
+ * the app lives is baked in. The module reads the app's prefs file from here. */
+static char data_dir[128] = "";
+module_param_string(data_dir, data_dir, sizeof(data_dir), 0);
 
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 typedef void *(*umh_setup_t)(const char *path, char **argv, char **envp, gfp_t gfp,
@@ -46,15 +52,17 @@ static int __nocfi __init dfroot_init(void)
 
     /* Run the installed manager's own libksud.so. The app no longer stages a
      * copy, so the package name and the two switches are read straight from the
-     * app's prefs file, the only channel from userspace that is already on disk
-     * when this module loads. */
+     * app's prefs file, whose directory the exploit passes in through insmod. */
     static const char sh[] = "/system/bin/sh";
     static char *envp[] = { "PATH=/system/bin", NULL };
-    static char *argv[] = { (char *)sh, "-c",
+    static char cmd[1024];
+    static char *argv[] = { (char *)sh, "-c", cmd, NULL };
+
+    snprintf(cmd, sizeof(cmd),
         "rmmod oplus_secure_harden 2>/dev/null;"         //
         " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
         " rmmod oplus_security_guard 2>/dev/null;"
-        " PREFS=/data/user_de/0/df.root/shared_prefs/dfroot.xml;"
+        " PREFS=%s/shared_prefs/dfroot.xml;"
         " PKG=$(sed -n 's/.*name=\"su_manager\">\\([^<]*\\)<.*/\\1/p' $PREFS | head -1);"
         " KSUD=$(find /data/app -path \"*/$PKG*/lib/arm64/libksud.so\" 2>/dev/null | head -1);"
         " [ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud;"
@@ -67,7 +75,7 @@ static int __nocfi __init dfroot_init(void)
         " else"
         "   touch /dev/dfm1;"
         " fi",
-        NULL };
+        data_dir);
 
     // Symbol finder
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };

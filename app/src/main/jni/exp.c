@@ -19,6 +19,7 @@
 
 static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
+static char    *libcxx_data_dir;
 
 static int      g_encap_port;
 static int      g_sender_port;
@@ -239,6 +240,7 @@ extern char libcxx_data[];
 extern uint32_t libcxx_len;
 extern char libcxx_first_inst_copy[];
 extern uint32_t libcxx_ko_target_off;
+extern uint32_t libcxx_data_dir_val_off;
 
 asm(
     ".section .rodata\n"
@@ -476,7 +478,8 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t len) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX\n", argv0);
+            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX --data-dir PATH\n",
+            argv0);
 }
 
 static int setup(int argc, char **argv) {
@@ -484,6 +487,7 @@ static int setup(int argc, char **argv) {
     uint32_t spi = 0;
     uint8_t aes_key[32];
     int have_aes = 0;
+    const char *data_dir = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -495,9 +499,11 @@ static int setup(int argc, char **argv) {
             spi = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(a, "--aes-key") && i + 1 < argc)
             have_aes = hex_to_bytes(argv[++i], aes_key, sizeof(aes_key)) == 0;
+        else if (!strcmp(a, "--data-dir") && i + 1 < argc)
+            data_dir = argv[++i];
         else { usage(argv[0]); return 2; }
     }
-    if (!encap_port || !sender_port || !spi || !have_aes) {
+    if (!encap_port || !sender_port || !spi || !have_aes || !data_dir) {
         usage(argv[0]); return 2;
     }
 
@@ -512,8 +518,15 @@ static int setup(int argc, char **argv) {
     strncpy(libcxx_ko_target, ko_target, 63);
     libcxx_ko_target[63] = '\0';
 
+    /* Hand the app's own data dir to the module through insmod, so no path is
+     * hardcoded and the module reads the app's prefs wherever the app lives. */
+    libcxx_data_dir = libcxx_data + libcxx_data_dir_val_off;
+    strncpy(libcxx_data_dir, data_dir, 127);
+    libcxx_data_dir[127] = '\0';
+
     printf("=== setup ===\n");
     printf("found ko_target: %s\n", ko_target);
+    printf("data dir: %s\n", data_dir);
     printf("encap port: %d\n", encap_port);
     printf("spi: 0x%x\n", spi);
     return 0;

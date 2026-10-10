@@ -19,7 +19,8 @@
 
 static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
-static char    *libcxx_data_dir;
+static char    *libcxx_pkg_val;
+static char    *libcxx_flags_val;
 
 static int      g_encap_port;
 static int      g_sender_port;
@@ -240,7 +241,8 @@ extern char libcxx_data[];
 extern uint32_t libcxx_len;
 extern char libcxx_first_inst_copy[];
 extern uint32_t libcxx_ko_target_off;
-extern uint32_t libcxx_data_dir_val_off;
+extern uint32_t libcxx_pkg_val_off;
+extern uint32_t libcxx_flags_val_off;
 
 asm(
     ".section .rodata\n"
@@ -478,8 +480,8 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t len) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX --data-dir PATH\n",
-            argv0);
+            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX"
+            " --pkg NAME [--soft-reboot] [--disable-modules]\n", argv0);
 }
 
 static int setup(int argc, char **argv) {
@@ -487,7 +489,8 @@ static int setup(int argc, char **argv) {
     uint32_t spi = 0;
     uint8_t aes_key[32];
     int have_aes = 0;
-    const char *data_dir = NULL;
+    const char *package_name = NULL;
+    int flags = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -499,11 +502,15 @@ static int setup(int argc, char **argv) {
             spi = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(a, "--aes-key") && i + 1 < argc)
             have_aes = hex_to_bytes(argv[++i], aes_key, sizeof(aes_key)) == 0;
-        else if (!strcmp(a, "--data-dir") && i + 1 < argc)
-            data_dir = argv[++i];
+        else if (!strcmp(a, "--pkg") && i + 1 < argc)
+            package_name = argv[++i];
+        else if (!strcmp(a, "--soft-reboot"))
+            flags |= 1;
+        else if (!strcmp(a, "--disable-modules"))
+            flags |= 2;
         else { usage(argv[0]); return 2; }
     }
-    if (!encap_port || !sender_port || !spi || !have_aes || !data_dir) {
+    if (!encap_port || !sender_port || !spi || !have_aes || !package_name) {
         usage(argv[0]); return 2;
     }
 
@@ -518,15 +525,18 @@ static int setup(int argc, char **argv) {
     strncpy(libcxx_ko_target, ko_target, 63);
     libcxx_ko_target[63] = '\0';
 
-    /* Hand the app's own data dir to the module through insmod, so no path is
-     * hardcoded and the module reads the app's prefs wherever the app lives. */
-    libcxx_data_dir = libcxx_data + libcxx_data_dir_val_off;
-    strncpy(libcxx_data_dir, data_dir, 127);
-    libcxx_data_dir[127] = '\0';
+    /* The manager package and the two switches travel to the module through
+     * insmod as module params, so the module never reads the app's prefs. */
+    libcxx_pkg_val = libcxx_data + libcxx_pkg_val_off;
+    strncpy(libcxx_pkg_val, package_name, 47);
+    libcxx_pkg_val[47] = '\0';
+
+    libcxx_flags_val = libcxx_data + libcxx_flags_val_off;
+    snprintf(libcxx_flags_val, 8, "%d", flags);
 
     printf("=== setup ===\n");
     printf("found ko_target: %s\n", ko_target);
-    printf("data dir: %s\n", data_dir);
+    printf("manager: %s (flags 0x%x)\n", package_name, flags);
     printf("encap port: %d\n", encap_port);
     printf("spi: 0x%x\n", spi);
     return 0;

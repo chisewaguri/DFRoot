@@ -10,10 +10,13 @@
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
 
-/* The exploit passes the app's data dir through insmod, so nothing about where
- * the app lives is baked in. The module reads the app's prefs file from here. */
-static char data_dir[128] = "";
-module_param_string(data_dir, data_dir, sizeof(data_dir), 0);
+/* The exploit passes the manager package and the two switches through insmod,
+ * so the module never reads the app's prefs. flags bit0 soft reboot, bit1
+ * disable modules. */
+static char package_name[64] = "";
+module_param_string(package_name, package_name, sizeof(package_name), 0);
+static int flags;
+module_param(flags, int, 0);
 
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 typedef void *(*umh_setup_t)(const char *path, char **argv, char **envp, gfp_t gfp,
@@ -50,9 +53,8 @@ static int __nocfi __init dfroot_init(void)
     void *info;
     int ret;
 
-    /* Run the installed manager's own libksud.so. The app no longer stages a
-     * copy, so the package name and the two switches are read straight from the
-     * app's prefs file, whose directory the exploit passes in through insmod. */
+    /* Run the installed manager's own libksud.so. The manager package and the
+     * two switches arrive as module params, so nothing is read from the app. */
     static const char sh[] = "/system/bin/sh";
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char cmd[1024];
@@ -62,20 +64,21 @@ static int __nocfi __init dfroot_init(void)
         "rmmod oplus_secure_harden 2>/dev/null;"         //
         " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
         " rmmod oplus_security_guard 2>/dev/null;"
-        " PREFS=%s/shared_prefs/dfroot.xml;"
-        " PKG=$(sed -n 's/.*name=\"su_manager\">\\([^<]*\\)<.*/\\1/p' $PREFS | head -1);"
-        " KSUD=$(find /data/app -path \"*/$PKG*/lib/arm64/libksud.so\" 2>/dev/null | head -1);"
+        " KSUD=$(find /data/app -path \"*/%s*/lib/arm64/libksud.so\" 2>/dev/null | head -1);"
         " [ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud;"
-        " if grep -q 'name=\"disable_modules\" value=\"true\"' $PREFS; then"
-        "   for d in /data/adb/modules/*/; do [ -d \"$d\" ] && touch \"$d/disable\"; done;"
-        " fi;"
-        " if \"$KSUD\" late-load --package-name \"$PKG\"; then"
+        "%s"
+        " if \"$KSUD\" late-load --package-name %s; then"
         "   touch /dev/dfm0;"
-        "   grep -q 'name=\"soft_reboot\" value=\"true\"' $PREFS && \"$KSUD\" soft-reboot;"
+        "%s"
         " else"
         "   touch /dev/dfm1;"
         " fi",
-        data_dir);
+        package_name,
+        (flags & 2)
+            ? " for d in /data/adb/modules/*/; do [ -d \"$d\" ] && touch \"$d/disable\"; done;"
+            : "",
+        package_name,
+        (flags & 1) ? " \"$KSUD\" soft-reboot;" : "");
 
     // Symbol finder
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };

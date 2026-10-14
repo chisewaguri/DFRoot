@@ -70,7 +70,6 @@ static int __nocfi __init dfroot_init(void)
         "%s"
         " if \"%s\" late-load --package-name %s; then"
         "   touch /dev/dfm0;"
-        "%s"
         " else"
         "   touch /dev/dfm1;"
         " fi;"

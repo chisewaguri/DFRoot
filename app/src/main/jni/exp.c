@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,8 +21,8 @@
 static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
 static char    *libcxx_pkg_val;
-static char    *libcxx_ksud_val;
 static char    *libcxx_flags_val;
+static const char *g_ksud_path;
 
 static int      g_encap_port;
 static int      g_sender_port;
@@ -243,7 +244,6 @@ extern uint32_t libcxx_len;
 extern char libcxx_first_inst_copy[];
 extern uint32_t libcxx_ko_target_off;
 extern uint32_t libcxx_pkg_val_off;
-extern uint32_t libcxx_ksud_val_off;
 extern uint32_t libcxx_flags_val_off;
 
 asm(
@@ -360,6 +360,21 @@ static int patch_ko(void) {
     }
     printf("Using KMI: android%d-%d.%d\n",
              ko->android_release, ko->kver_major, ko->kver_minor);
+
+    /* Overwrite the ksud_path module-param slot inside the ko image. The
+     * module initializer reserves 160 bytes (22-char marker + underscore
+     * padding + NULs) so the slot is in .data, not .bss, and survives being
+     * read from the file. */
+    {
+        char *slot = memmem(ko->start, (size_t)(ko->end - ko->start),
+                            "DFROOT_KSUD_PATH_SLOT", 21);
+        if (!slot || slot + 160 > ko->end) {
+            printf("ksud_path slot not found in ko image\n"); return 1;
+        }
+        memset(slot, 0, 160);
+        strncpy(slot, g_ksud_path, 159);
+        printf("ko ksud_path: %s\n", g_ksud_path);
+    }
 
     size_t len;
     char *buf = pad16(ko->start, (size_t)(ko->end - ko->start), &len);
@@ -532,16 +547,14 @@ static int setup(int argc, char **argv) {
     strncpy(libcxx_ko_target, ko_target, 63);
     libcxx_ko_target[63] = '\0';
 
-    /* The manager package, its ksud path and the two switches travel to the
-     * module through insmod as module params, so the module never reads the
-     * app's prefs. */
+    /* The manager package and the two switches travel to the module through
+     * insmod as module params. The ksud path cannot live in the shellcode
+     * blob: the blob must fit the tail-page code cave of libc++.so, which is
+     * under 700 bytes on some devices. It is instead patched into the ko
+     * image below, which is written wholesale with no size constraint. */
     libcxx_pkg_val = libcxx_data + libcxx_pkg_val_off;
     strncpy(libcxx_pkg_val, package_name, 47);
     libcxx_pkg_val[47] = '\0';
-
-    libcxx_ksud_val = libcxx_data + libcxx_ksud_val_off;
-    strncpy(libcxx_ksud_val, ksud_path, 159);
-    libcxx_ksud_val[159] = '\0';
 
     libcxx_flags_val = libcxx_data + libcxx_flags_val_off;
     snprintf(libcxx_flags_val, 8, "%d", flags);

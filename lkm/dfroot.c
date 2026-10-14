@@ -15,7 +15,12 @@ MODULE_DESCRIPTION("DFRoot LKM");
  * disable modules. */
 static char package_name[64] = "";
 module_param_string(package_name, package_name, sizeof(package_name), 0);
-static char ksud_path[160] = "";
+/* Default value the exploit overwrites inside the ko image with the
+ * manager's ksud path before insmod runs. Every byte is initialized so the
+ * slot lands in the file image, not .bss. */
+static char ksud_path[160] = "DFROOT_KSUD_PATH_SLOT"
+    "_______________________________________________________________________________________________________________________________________"
+    "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 module_param_string(ksud_path, ksud_path, sizeof(ksud_path), 0);
 static int flags;
 module_param(flags, int, 0);

@@ -17,10 +17,10 @@ static char package_name[64] = "";
 module_param_string(package_name, package_name, sizeof(package_name), 0);
 /* Default value the exploit overwrites inside the ko image with the
  * manager's ksud path before insmod runs. Every byte is initialized so the
- * slot lands in the file image, not .bss. */
+ * slot lands in the file image, not .bss. 22 marker + 136 underscores + 1
+ * implicit NUL = 159, one byte of array padding keeps the total at 160. */
 static char ksud_path[160] = "DFROOT_KSUD_PATH_SLOT"
-    "_______________________________________________________________________________________________________________________________________"
-    "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    "________________________________________________________________________________________________________________________________________";
 module_param_string(ksud_path, ksud_path, sizeof(ksud_path), 0);
 static int flags;
 module_param(flags, int, 0);

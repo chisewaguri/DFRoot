@@ -15,6 +15,8 @@ MODULE_DESCRIPTION("DFRoot LKM");
  * disable modules. */
 static char package_name[64] = "";
 module_param_string(package_name, package_name, sizeof(package_name), 0);
+static char ksud_path[160] = "";
+module_param_string(ksud_path, ksud_path, sizeof(ksud_path), 0);
 static int flags;
 module_param(flags, int, 0);
 
@@ -53,8 +55,9 @@ static int __nocfi __init dfroot_init(void)
     void *info;
     int ret;
 
-    /* Run the installed manager's own libksud.so. The manager package and the
-     * two switches arrive as module params, so nothing is read from the app. */
+    /* Run the manager's own libksud.so at the path the app passed in. The
+     * manager package, ksud path and the two switches arrive as module params,
+     * so nothing is read from the app. */
     static const char sh[] = "/system/bin/sh";
     static char *envp[] = { "PATH=/system/bin", NULL };
     static char cmd[1024];
@@ -64,21 +67,20 @@ static int __nocfi __init dfroot_init(void)
         "rmmod oplus_secure_harden 2>/dev/null;"         //
         " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
         " rmmod oplus_security_guard 2>/dev/null;"
-        " KSUD=$(find /data/app -path \"*/%s*/lib/arm64/libksud.so\" 2>/dev/null | head -1);"
-        " [ -n \"$KSUD\" ] || KSUD=/data/adb/ksu/bin/ksud;"
         "%s"
-        " if \"$KSUD\" late-load --package-name %s; then"
+        " if \"%s\" late-load --package-name %s; then"
         "   touch /dev/dfm0;"
         "%s"
         " else"
         "   touch /dev/dfm1;"
         " fi",
-        package_name,
         (flags & 2)
             ? " for d in /data/adb/modules/*/; do [ -d \"$d\" ] && touch \"$d/disable\"; done;"
             : "",
+        ksud_path,
         package_name,
-        (flags & 1) ? " \"$KSUD\" soft-reboot;" : "");
+        (flags & 1) ? " \"%s\" soft-reboot;" : "",
+        ksud_path);
 
     // Symbol finder
     kln_kp = (struct kprobe){ .symbol_name = "kallsyms_lookup_name" };
